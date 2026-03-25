@@ -1,4 +1,4 @@
--- -- Week 10 & 11 : ETL, Part 5&6 In class exercise narrative ETL part 2: dealing with new facts and changing dimensions
+-- Week 10 & 11 : ETL, Part 5&6 In class exercise narrative ETL part 2: dealing with new facts and changing dimensions
 
 /* -- add columns "ExtractionTimestamp" and "f_loaded" to the fact table
 ALTER TABLE RevenueFactTable
