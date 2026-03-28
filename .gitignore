@@ -1,0 +1,56 @@
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Logs / Temp
+# =========================
+*.log
+*.tmp
+
+# =========================
+# Database Files (if any)
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+# Exported Data (optional)
+# =========================
+*.csv
+*.xlsx
+*.zip
+
+# =========================
+# IDE / Editor
+# =========================
+# .vscode/
+
+# =========================
+# Backup / Temp SQL files
+# =========================
+*.bak
+*.backup
+
+# =========================
+# Folders
+# =========================
+Assignment 4 ETL Assignment on Helping Hand/
+Basics/
+ETL Assignment Part 1 & 2/
+SORT/
+Week 00 - Evolution of Decision Support Systems, The Need for Data Warehousing/
+Week 01 - DW architecture, elements and processes/
+Week 02 - Data Warehouse Modeling - Part 1/
+Week 03 - Data Warehouse Modeling - Part 2/
+Week 04 - Data Warehouse Modeling - Part 3/
+Week 05 - Data Warehouse Modeling - Part 4/
+Week 06 - Data Warehouse Modeling - Part 5/
+
+# =========================
+# Files
+# =========================
+WHO_WHAT_WHERE_WHEN_HOW_WHY.txt
