@@ -23,6 +23,13 @@ END LOOP myloop;
 
 END;
 
+
+/* Note: these steps must be performed before the procedures are executed:
+1. Create a new column CalendarWeekDay in the CalendarDimension table
+2. Allow NULL values in the MonthYear, CalendarYear, and CalendarWeekDay columns
+3. SET CalendarKey to AUTO_INCREMENT */
+
+
 -- Update procedure for calendar dimension to populate MonthYear and CalendarYear columns
 -- Slightly modified from Patricia's class code
 DELIMITER $$
@@ -42,6 +49,7 @@ END;
 SELECT c.customerid, c.customername, c.customerzip
 FROM valsanv_ZAGIMORE.customer c;
 
+-- SET CustomerKey to AUTO_INCREMENT
 -- Now we can insert this data into the CustomerDimension table in the ZAGIMORE_DS database
 INSERT INTO valsanv_ZAGIMORE_DS.CustomerDimension (CustomerID, CustomerName, CustomerZip)
 SELECT c.customerid, c.customername, c.customerzip
@@ -62,6 +70,7 @@ SELECT 	s.storeid,	s.storezip,	s.regionid,	r.regionname	-- regionid can be r.reg
 FROM valsanv_ZAGIMORE.region r
 JOIN valsanv_ZAGIMORE.store s ON r.RegionID = s.RegionID;
 
+-- SET StoreKey to AUTO_INCREMENT
 -- Now we can insert this data into the StoreDimension table in the ZAGIMORE_DS database
 INSERT INTO valsanv_ZAGIMORE_DS.StoreDimension (StoreID, StoreZip, RegionID, RegionName)
 SELECT 	s.storeid,	s.storezip,	s.regionid,	r.regionname	-- regionid can be r.regionid or s.regionid since they are the same, but we will use s.regionid to avoid confusion
@@ -106,6 +115,7 @@ JOIN valsanv_ZAGIMORE.category c ON r.categoryid = c.categoryid;
 TRUNCATE valsanv_ZAGIMORE_DS.ProductDimension; -- Clear the ProductDimension table before repopulating it
 -- Using separate INSERT statements for sale and rental products were causing issues in auto increment fields, so we will use UNION keyword to combine the results of two queries into a single result set
 
+-- SET ProductKey to AUTO_INCREMENT, and add a new column ProductPriceMonthly
 -- Now let's use a combined query to extract data for both sale and rental products and insert into the ProductDimension table in the ZAGIMORE_DS database
 -- 03 - Extracting data for both sale and rental products
 INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, ProductPriceMonthly)
@@ -242,7 +252,7 @@ FROM valsanv_ZAGIMORE_DS.RevenueFactTable;
 -- Checking/visualizing the RevenueFactTable (ZAGIMORE_DS) data before aggregation; Degenerate dimensions dropped
 SELECT SUM(DollarAmount) AS TotalRevenue, CustomerKey, StoreKey, CalendarKey, ProductKey -- we'll replace ProductKey with ProductCategoryKey for aggregation
 FROM RevenueFactTable
-GROUP BY CustomerKey, StoreKey, CalendarKey, ProductKey
+GROUP BY CustomerKey, StoreKey, CalendarKey, ProductKey;
 
 -- Create ProductCategoryDimension in ZAGIMORE_DS
 CREATE Table ProductCategoryDimension
@@ -264,7 +274,7 @@ SELECT SUM(r.DollarAmount) AS TotalRevenue, r.CustomerKey, r.StoreKey, r.Calenda
 FROM RevenueFactTable r, ProductCategoryDimension pcd, ProductDimension pd
 WHERE pd.ProductKey = r.ProductKey 
 AND pd.CategoryID = pcd.ProductCategoryID
-GROUP BY r.CustomerKey, r.StoreKey, r.CalendarKey, pcd.ProductCategoryKey
+GROUP BY r.CustomerKey, r.StoreKey, r.CalendarKey, pcd.ProductCategoryKey;
 
 -- Create ProductCategoryDimension in ZAGIMORE_DW
 CREATE Table ProductCategoryDimension
@@ -283,7 +293,7 @@ CREATE TABLE OneWayProductCategoryAggregate
  CalendarKey INT,
  ProductCategoryKey INT,
  PRIMARY KEY (CustomerKey, StoreKey, CalendarKey, ProductCategoryKey)
-)
+);
 
 -- =========================================================================================================================
 -- Lecture 03/11/2026: Aggregates & Snapshots - Continued
@@ -304,7 +314,7 @@ ADD
   FOREIGN KEY (StoreKey) REFERENCES StoreDimension(StoreKey),
   FOREIGN KEY (CalendarKey) REFERENCES CalendarDimension(CalendarKey),
   FOREIGN KEY (ProductCategoryKey) REFERENCES ProductCategoryDimension(ProductCategoryKey)
-)
+);
 -- Note: Foreign Keys we can add over and over again, but not primary keys. For primary keys, we need to drop and re-create the table??
 -- If we hadn't defined the primary key when we created the aggregate fact table, we can define it here.
 
@@ -316,7 +326,7 @@ FROM valsanv_ZAGIMORE_DS.ProductCategoryDimension;
 -- Loading/Populate the new OneWayProductCategoryAggregate Fact table in ZAGIMORE_DW from OneWayProductCategoryAggregate in ZAGIMORE_DS
 INSERT INTO valsanv_ZAGIMORE_DW.OneWayProductCategoryAggregate (TotalRevenue, CustomerKey, StoreKey, CalendarKey, ProductCategoryKey)
 SELECT TotalRevenue, CustomerKey, StoreKey, CalendarKey, ProductCategoryKey
-FROM valsanv_ZAGIMORE_DS.OneWayProductCategoryAggregate
+FROM valsanv_ZAGIMORE_DS.OneWayProductCategoryAggregate;
 
 -- SNAPSHOTS
 -- Create a daily store snapshot of sales with following facts: revenue generated, total number of transactions and average revenue per day and store.
@@ -346,7 +356,7 @@ CREATE Table DailyStoreSnapshot
 INSERT INTO valsanv_ZAGIMORE_DS.DailyStoreSnapshot (TotalRevenue, TotalNoOfTxns, TotalNoLineItems, AvgRevenuePerTxn, AvgRevenuePerLineItem, StoreKey, CalendarKey)
 SELECT SUM(DollarAmount) AS TotalRevenue, COUNT(DISTINCT TID) AS TotalNoOfTxns, COUNT(TID) AS TotalNoLineItems, ROUND(SUM(DollarAmount) / COUNT(DISTINCT TID), 2) AS AvgRevenuePerTxn, ROUND(AVG(DollarAmount), 2) AS AvgRevenuePerLineItem, StoreKey, CalendarKey -- this version of MySQL doesn't support using aliases like ROUND(TotalRevenue / TotalNoOfTxns, 2) AS AvgRevenuePerTxn
 FROM valsanv_ZAGIMORE_DS.RevenueFactTable
-GROUP BY StoreKey, CalendarKey
+GROUP BY StoreKey, CalendarKey;
 
 -- Create DailyStoreSnapshot in ZAGIMORE_DW
 CREATE Table DailyStoreSnapshot
@@ -369,7 +379,7 @@ ADD FOREIGN KEY (CalendarKey) REFERENCES CalendarDimension(CalendarKey);
 -- Populate DailyStoreSnapshot in ZAGIMORE_DW from DailyStoreSnapshot in ZAGIMORE_DS
 INSERT INTO valsanv_ZAGIMORE_DW.DailyStoreSnapshot (TotalRevenue, TotalNoOfTxns, TotalNoLineItems, AvgRevenuePerTxn, AvgRevenuePerLineItem, StoreKey, CalendarKey)
 SELECT TotalRevenue, TotalNoOfTxns, TotalNoLineItems, AvgRevenuePerTxn, AvgRevenuePerLineItem, StoreKey, CalendarKey
-FROM valsanv_ZAGIMORE_DS.DailyStoreSnapshot
+FROM valsanv_ZAGIMORE_DS.DailyStoreSnapshot;
 
 -- =========================================================================================================================
 -- Assignment ETL Part4: One way aggregation by Product Category and One way aggregation by Region - Due: Monday, March 23, 2026, 11:00 AM
@@ -403,7 +413,7 @@ CREATE Table RegionDimension
 -- Populate RegionDimension in ZAGIMORE_DS
 INSERT INTO valsanv_ZAGIMORE_DS.RegionDimension (RegionID, RegionName)
 SELECT DISTINCT RegionID, RegionName
-FROM valsanv_ZAGIMORE_DS.StoreDimension
+FROM valsanv_ZAGIMORE_DS.StoreDimension;
 
 -- Check data for One way aggregation by Region (now using the RegionDimension table in ZAGIMORE_DS)
 SELECT SUM(r.DollarAmount) AS TotalRevenue, r.CustomerKey, rd.RegionID, rd.RegionName, r.CalendarKey, r.ProductKey
@@ -411,7 +421,7 @@ FROM RevenueFactTable r, StoreDimension sd, RegionDimension rd
 WHERE r.StoreKey = sd.StoreKey
 AND sd.RegionID = rd.RegionID
 GROUP BY r.CustomerKey, rd.RegionID, rd.RegionName, r.CalendarKey, r.ProductKey
-ORDER BY r.CalendarKey, rd.RegionName, r.CustomerKey, r.ProductKey
+ORDER BY r.CalendarKey, rd.RegionName, r.CustomerKey, r.ProductKey;
 
 -- Create OneWayRegionAggregate in ZAGIMORE_DS
 CREATE Table OneWayRegionAggregate
@@ -430,7 +440,7 @@ SELECT SUM(r.DollarAmount) AS TotalRevenue, r.CustomerKey, rd.RegionKey, r.Calen
 FROM RevenueFactTable r, StoreDimension sd, RegionDimension rd
 WHERE r.StoreKey = sd.StoreKey
 AND sd.RegionID = rd.RegionID
-GROUP BY r.CustomerKey, rd.RegionKey, r.CalendarKey, r.ProductKey
+GROUP BY r.CustomerKey, rd.RegionKey, r.CalendarKey, r.ProductKey;
 
 -- Create RegionDimension in ZAGIMORE_DW
 CREATE Table RegionDimension
@@ -444,7 +454,7 @@ CREATE Table RegionDimension
 -- Populate RegionDimension in ZAGIMORE_DW from RegionDimension in ZAGIMORE_DS
 INSERT INTO valsanv_ZAGIMORE_DW.RegionDimension (RegionKey, RegionID, RegionName)
 SELECT RegionKey, RegionID, RegionName
-FROM valsanv_ZAGIMORE_DS.RegionDimension
+FROM valsanv_ZAGIMORE_DS.RegionDimension;
 
 -- Create OneWayRegionAggregate in ZAGIMORE_DW
 CREATE Table OneWayRegionAggregate
@@ -467,7 +477,7 @@ ADD FOREIGN KEY (ProductKey) REFERENCES ProductDimension(ProductKey);
 -- Populate OneWayRegionAggregate in ZAGIMORE_DW from OneWayRegionAggregate in ZAGIMORE_DS
 INSERT INTO valsanv_ZAGIMORE_DW.OneWayRegionAggregate (TotalRevenue, CustomerKey, RegionKey, CalendarKey, ProductKey)
 SELECT TotalRevenue, CustomerKey, RegionKey, CalendarKey, ProductKey
-FROM valsanv_ZAGIMORE_DS.OneWayRegionAggregate
+FROM valsanv_ZAGIMORE_DS.OneWayRegionAggregate;
 
 -- =========================================================================================================================
 -- Lecture 03/23/2026: Aggregates & Snapshots - Continued
@@ -481,7 +491,7 @@ FROM RevenueFactTable r, ProductDimension pd
 WHERE r.ProductKey = pd.ProductKey
 AND pd.CategoryName = "Footwear" -- "Footwear" is the CategoryName for footwear products in the ProductDimension table
 GROUP BY r.StoreKey, r.CalendarKey
-ORDER BY r.StoreKey ASC, r.CalendarKey ASC
+ORDER BY r.StoreKey ASC, r.CalendarKey ASC;
 
 -- DailyStoreSnapshot, Number of transactions with more than $100 in revenue -- [CHECK THIS QUERY]
 SELECT -- SUM(DollarAmount) AS TotalRevenue, 
@@ -490,13 +500,13 @@ r.StoreKey, r.CalendarKey
 FROM RevenueFactTable r
 GROUP BY r.StoreKey, r.CalendarKey
 HAVING SUM(DollarAmount) > 100
-ORDER BY r.StoreKey ASC, r.CalendarKey ASC
+ORDER BY r.StoreKey ASC, r.CalendarKey ASC;
 
 -- DailyStoreSnapshot, Number of transactions with more than $100 in revenue
 SELECT COUNT(DISTINCT TID) AS TotalNoOfTxns, r.StoreKey, r.CalendarKey
 FROM RevenueFactTable r
 GROUP BY r.StoreKey, r.CalendarKey
-ORDER BY r.StoreKey ASC, r.CalendarKey ASC
+ORDER BY r.StoreKey ASC, r.CalendarKey ASC;
 
 -- Query to group TotalRevenue by TID and filter out transactions with less than $100 in revenue
 SELECT -- SUM(DollarAmount) AS TotalTxnRevenue, -- OPTIONAL - this was used just to see the total revenue for each transaction 
@@ -505,7 +515,7 @@ r.StoreKey, r.CalendarKey, r.TID
 FROM RevenueFactTable r
 GROUP BY r.StoreKey, r.CalendarKey, r.TID
 HAVING SUM(DollarAmount) > 100 -- this version of MySQL doesn't support using alias "TotalTxnRevenue" here; otherwise, we could have written "HAVING TotalTxnRevenue > 100" 
-ORDER BY r.StoreKey ASC, r.CalendarKey ASC
+ORDER BY r.StoreKey ASC, r.CalendarKey ASC;
 
 -- Query to group TotalRevenue by TID and filter out transactions with less than $100 -- FINAL 
 -- Now were creating a view using the query above. Here, we also dropped the optional fields, because we don't need them
@@ -514,13 +524,13 @@ SELECT r.StoreKey, r.CalendarKey, r.TID
 FROM RevenueFactTable r
 GROUP BY r.StoreKey, r.CalendarKey, r.TID
 HAVING SUM(DollarAmount) > 100
-ORDER BY r.StoreKey ASC, r.CalendarKey ASC
+ORDER BY r.StoreKey ASC, r.CalendarKey ASC;
 
 -- DailyStoreSnapshot, Number of transactions with more than $100 in revenue
 SELECT COUNT(DISTINCT r.TID) AS TotalNoOfTxnsHundredPlus, r.StoreKey, r.CalendarKey
 FROM RFTHundredPlus r
 GROUP BY r.StoreKey, r.CalendarKey
-ORDER BY r.StoreKey ASC, r.CalendarKey ASC
+ORDER BY r.StoreKey ASC, r.CalendarKey ASC;
 
 -- DailyStoreSnapshot, Local Customer Revenue
 SELECT SUM(DollarAmount) AS TotalLocalCustomerRevenue, r.StoreKey, r.CalendarKey
@@ -529,7 +539,7 @@ WHERE r.CustomerKey = cd.CustomerKey
 AND r.StoreKey = sd.StoreKey
 AND LEFT(sd.StoreZip, 2) = LEFT(cd.CustomerZip, 2) -- the first two digits of the zip code for the store and customer are matched
 -- OR sd.StoreZip = cd.CustomerZip -- for exactly matching; the two zip codes must be strictly equal
-GROUP BY r.StoreKey, r.CalendarKey
+GROUP BY r.StoreKey, r.CalendarKey;
 
 /* -- DO IT YOURSELF
 -- DailyStoreSnapshot_2 table is not required; write the query to modify the existing DailyStoreSnapshot table
@@ -574,7 +584,7 @@ FROM RevenueFactTable r, ProductDimension pd
 WHERE r.ProductKey = pd.ProductKey
 AND pd.CategoryName = "Footwear"
 GROUP BY r.StoreKey, r.CalendarKey
-ORDER BY r.StoreKey ASC, r.CalendarKey ASC
+ORDER BY r.StoreKey ASC, r.CalendarKey ASC;
 
 
 UPDATE DailyStoreSnapshot ds, RFTFootwear rft
@@ -583,7 +593,7 @@ SET ds.TotalFootwareRevenue = rft.TotalFootwareRevenue
 /* SELECT *
 FROM DailyStoreSnapshot ds, RFTFootwear rft */
 WHERE ds.StoreKey = rft.StoreKey 
-AND ds.CalendarKey = rft.CalendarKey 
+AND ds.CalendarKey = rft.CalendarKey; 
 
 -- replace the NULL values in the TotalFootwareRevenue column with 0
 UPDATE DailyStoreSnapshot ds
@@ -618,7 +628,7 @@ CREATE VIEW HighNoOfTxns AS
 SELECT COUNT(DISTINCT TID) AS TotalNoOfTxnsHundredPlus, r.StoreKey, r.CalendarKey
 FROM RFTHundredPlus r
 GROUP BY r.StoreKey, r.CalendarKey
-ORDER BY r.StoreKey ASC, r.CalendarKey ASC
+ORDER BY r.StoreKey ASC, r.CalendarKey ASC;
 
 UPDATE DailyStoreSnapshot ds, HighNoOfTxns hnt
 SET ds.TotalNoOfTxnsHundredPlus = hnt.TotalNoOfTxnsHundredPlus
@@ -626,7 +636,7 @@ SET ds.TotalNoOfTxnsHundredPlus = hnt.TotalNoOfTxnsHundredPlus
 /* SELECT *
 FROM DailyStoreSnapshot ds, HighNoOfTxns hnt */
 WHERE ds.StoreKey = hnt.StoreKey 
-AND ds.CalendarKey = hnt.CalendarKey
+AND ds.CalendarKey = hnt.CalendarKey;
 
 CREATE VIEW LocalCustomerRevenue AS
 SELECT SUM(DollarAmount) AS TotalLocalCustomerRevenue, r.StoreKey, r.CalendarKey
@@ -636,7 +646,7 @@ AND r.StoreKey = sd.StoreKey
 AND LEFT(sd.StoreZip, 2) = LEFT(cd.CustomerZip, 2) -- the first two digits of the zip code for the store and customer are matched
 -- OR sd.StoreZip = cd.CustomerZip -- for exactly matching; the two zip codes must be strictly equal
 GROUP BY r.StoreKey, r.CalendarKey
-ORDER BY r.StoreKey ASC, r.CalendarKey ASC
+ORDER BY r.StoreKey ASC, r.CalendarKey ASC;
 
 -- Update the TotalLocalCustomerRevenue column
 UPDATE DailyStoreSnapshot ds, LocalCustomerRevenue lcr
@@ -645,7 +655,7 @@ SET ds.TotalLocalCustomerRevenue = lcr.TotalLocalCustomerRevenue
 /* SELECT * 
 FROM DailyStoreSnapshot ds, LocalCustomerRevenue lcr */
 WHERE ds.StoreKey = lcr.StoreKey 
-AND ds.CalendarKey = lcr.CalendarKey
+AND ds.CalendarKey = lcr.CalendarKey;
 
 -- N.B. The views that we have created can be dropped now. It is not required to keep them in the database. I'll keep them for now, to understand the concept.
 
@@ -670,7 +680,7 @@ MODIFY COLUMN CalendarKey INT AFTER StoreKey;
 UPDATE valsanv_ZAGIMORE_DW.DailyStoreSnapshot dsw, valsanv_ZAGIMORE_DS.DailyStoreSnapshot dss
 SET dsw.TotalFootwareRevenue = dss.TotalFootwareRevenue, dsw.TotalNoOfTxnsHundredPlus = dss.TotalNoOfTxnsHundredPlus, dsw.TotalLocalCustomerRevenue = dss.TotalLocalCustomerRevenue
 WHERE dsw.StoreKey = dss.StoreKey 
-AND dsw.CalendarKey = dss.CalendarKey
+AND dsw.CalendarKey = dss.CalendarKey;
 
 -- INITIAL DATA WAREHOUSE LOADING is COMPLETED on 03/25/2023
 -- INITIAL DATA WAREHOUSE LOADING is COMPLETED on 03/25/2023

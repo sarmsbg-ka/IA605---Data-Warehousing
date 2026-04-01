@@ -1,0 +1,42 @@
+-- DELETE
+SELECT *
+FROM DailyStoreSnapshot
+WHERE CalendarKey = 4832;
+
+-- DELETE
+SELECT *
+FROM OneWayProductCategoryAggregate
+WHERE CalendarKey = 4832;
+
+-- DELETE
+SELECT *
+FROM OneWayRegionAggregate
+WHERE CalendarKey = 4832;
+
+-- DELETE
+SELECT *
+FROM RevenueFactTable
+WHERE CalendarKey = 4832;
+
+-- DELETE
+SELECT *
+FROM IntermediateFactTable
+WHERE FullDate = '2026-03-25';
+
+-- update the "ExtractionTimestamp" and "f_loaded" columns in the fact table for existing rows
+UPDATE dubek_ZAGIMORE_DS.RevenueFactTable
+SET f_loaded = TRUE;
+
+-- update the "ExtractionTimestamp" column in the fact table for existing rows
+UPDATE dubek_ZAGIMORE_DS.RevenueFactTable
+SET ExtractionTimestamp = '2026-03-18 16:10:27';
+
+
+SELECT *
+FROM dubek_ZAGIMORE_DS.RevenueFactTable
+WHERE ExtractionTimestamp = '2026-04-01 17:13:38';
+
+-- update the "ExtractionTimestamp" column in the fact table for existing rows
+UPDATE dubek_ZAGIMORE_DS.RevenueFactTable
+SET ExtractionTimestamp = '2026-03-30 19:27:58'
+WHERE ExtractionTimestamp = '2026-04-01 17:13:38';
