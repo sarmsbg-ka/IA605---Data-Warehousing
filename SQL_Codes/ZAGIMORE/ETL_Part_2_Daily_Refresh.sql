@@ -331,3 +331,92 @@ FROM valsanv_ZAGIMORE_DS.RevenueFactTable
 UNION
 SELECT COUNT(*)
 FROM valsanv_ZAGIMORE_DW.RevenueFactTable;
+
+
+-- Let's insert some more new data into the ZAGIMORE operational database and test the ETL procedure
+-- Creating new instances of operational data: new sales transaction
+-- Create one new sales transaction record in the salestransaction table of the ZAGIMORE  operational database.
+INSERT INTO valsanv_ZAGIMORE.salestransaction (tid, tdate, customerid, storeid)
+VALUES ("N007", '2026-04-04', "8-9-000", "S7");
+
+-- Create two new records in the sold_via table for that new transaction, showing purchases of two products 
+INSERT INTO valsanv_ZAGIMORE.soldvia (productid, tid, noofitems)
+VALUES ("1X1", "N007", 3), ("1X2", "N007", 5);
+
+-- Creating new instances of operational data: new rental transaction
+INSERT INTO valsanv_ZAGIMORE.rentaltransaction (tid, tdate, customerid, storeid) VALUES ("N008", '2026-04-04', "8-9-000", "S3");
+INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("1X1", "N008", "D", 5);
+INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("2X2", "N008", "W", 5);
+
+-- Self: 04-05-2026
+-- Modifying the sanity check query and making it a stored procedure. This will make it easier to perform the sanity check on a regular basis and confirm that the row counts are consistent.
+DROP PROCEDURE IF EXISTS sp_validate_row_counts;
+
+DELIMITER $$$
+
+CREATE PROCEDURE sp_validate_row_counts()
+BEGIN
+    SELECT 'soldvia' AS table_name, COUNT(*) AS row_count
+    FROM valsanv_ZAGIMORE.soldvia
+
+    UNION ALL
+
+    SELECT 'rentvia', COUNT(*)
+    FROM valsanv_ZAGIMORE.rentvia
+
+    UNION ALL
+
+    SELECT 'DS_RevenueFactTable', COUNT(*)
+    FROM valsanv_ZAGIMORE_DS.RevenueFactTable
+
+    UNION ALL
+
+    SELECT 'DW_RevenueFactTable', COUNT(*)
+    FROM valsanv_ZAGIMORE_DW.RevenueFactTable;
+END$$$
+
+DELIMITER ;
+
+-- Create a stored procedure to validate the row counts in the source and destination tables
+-- Note: This is an enhanced version of sp_validate_row_counts. The logic for both these stored procedures is valid only if RevenueFactTable is supposed to contain exactly one row for every row in soldvia and in rentvia tables. If our fact table grain is different, then row counts may not match even when the load is correct.
+DROP PROCEDURE IF EXISTS sp_validate_row_counts_enhanced;
+
+DELIMITER $$$
+
+CREATE PROCEDURE sp_validate_row_counts_enhanced()
+BEGIN
+    DECLARE soldvia_count INT DEFAULT 0;
+    DECLARE rentvia_count INT DEFAULT 0;
+    DECLARE src_count INT DEFAULT 0;
+    DECLARE ds_count INT DEFAULT 0;
+    DECLARE dw_count INT DEFAULT 0;
+
+    SELECT COUNT(*) INTO soldvia_count
+    FROM valsanv_ZAGIMORE.soldvia;
+
+    SELECT COUNT(*) INTO rentvia_count
+    FROM valsanv_ZAGIMORE.rentvia;
+
+    SET src_count = soldvia_count + rentvia_count;
+
+    SELECT COUNT(*) INTO ds_count
+    FROM valsanv_ZAGIMORE_DS.RevenueFactTable;
+
+    SELECT COUNT(*) INTO dw_count
+    FROM valsanv_ZAGIMORE_DW.RevenueFactTable;
+
+    SELECT 
+        soldvia_count AS soldvia_rows,
+        rentvia_count AS rentvia_rows,
+        src_count AS source_total,
+        ds_count AS ds_total,
+        dw_count AS dw_total,
+        (src_count - ds_count) AS source_minus_ds,
+        (ds_count - dw_count) AS ds_minus_dw,
+        CASE
+            WHEN src_count = ds_count AND ds_count = dw_count THEN 'PASS'
+            ELSE 'FAIL'
+        END AS validation_status;
+END$$$
+
+DELIMITER ;
