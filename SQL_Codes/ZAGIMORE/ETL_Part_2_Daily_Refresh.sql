@@ -420,3 +420,148 @@ BEGIN
 END$$$
 
 DELIMITER ;
+
+-- =========================================================================================================================
+-- Lecture 04/06/2026: Week 10 & 11 : ETL, Part 5 & 6
+-- In class exercise narrative ETL part 2: dealing with new facts and changing dimensions - Continued
+-- =========================================================================================================================
+
+-- Let's insert some more new data into the ZAGIMORE operational database and test the daily_fact_refresh ETL procedure
+-- Creating new instances of operational data: new sales transaction
+-- Create one new sales transaction record in the salestransaction table of the ZAGIMORE  operational database.
+INSERT INTO valsanv_ZAGIMORE.salestransaction (tid, tdate, customerid, storeid)
+VALUES ("N009", '2026-04-06', "8-9-000", "S7");
+
+-- Create two new records in the sold_via table for that new transaction, showing purchases of two products 
+INSERT INTO valsanv_ZAGIMORE.soldvia (productid, tid, noofitems)
+VALUES ("1X1", "N009", 3), ("1X2", "N009", 5);
+
+-- Creating new instances of operational data: new rental transaction
+INSERT INTO valsanv_ZAGIMORE.rentaltransaction (tid, tdate, customerid, storeid) VALUES ("N010", '2026-04-06', "8-9-000", "S3");
+INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("1X1", "N010", "D", 5);
+INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("2X2", "N010", "W", 5);
+
+-- Call the daily_fact_refresh ETL procedure
+CALL valsanv_ZAGIMORE_DS.daily_fact_refresh();
+-- Note: verify the results using the stored procedure sp_validate_row_counts_enhanced or sp_validate_row_counts
+
+-- Let's insert some more new data into the ZAGIMORE operational database and test the late_arriving_fact_refresh ETL procedure
+-- Creating new instances of operational data: new sales transaction
+-- Create one new sales transaction record in the salestransaction table of the ZAGIMORE  operational database.
+INSERT INTO valsanv_ZAGIMORE.salestransaction (tid, tdate, customerid, storeid)
+VALUES ("N011", '2026-04-04', "8-9-000", "S7");
+
+-- Create two new records in the sold_via table for that new transaction, showing purchases of two products 
+INSERT INTO valsanv_ZAGIMORE.soldvia (productid, tid, noofitems)
+VALUES ("1X1", "N011", 3), ("1X2", "N011", 5);
+
+-- Creating new instances of operational data: new rental transaction
+INSERT INTO valsanv_ZAGIMORE.rentaltransaction (tid, tdate, customerid, storeid) VALUES ("N012", '2026-04-04', "8-9-000", "S3");
+INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("1X1", "N012", "D", 5);
+INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("2X2", "N012", "W", 5);
+
+-- Calling the late_arriving_fact_refresh ETL procedure
+CALL valsanv_ZAGIMORE_DS.late_arriving_fact_refresh();
+-- Note: verify the results using the stored procedure sp_validate_row_counts_enhanced or sp_validate_row_counts
+
+-- 3. Appending  new dimension values to the the product dimension table in the next ETL cycle.
+-- =========================================================================================================================
+
+-- add columns "ExtractionTimestamp" and "pd_loaded" to the ProductDimension
+ALTER TABLE valsanv_ZAGIMORE_DS.ProductDimension
+ADD COLUMN ExtractionTimestamp TIMESTAMP,
+ADD COLUMN pd_loaded BOOLEAN;
+
+-- update the "pd_loaded" column in the ProductDimension for existing rows
+UPDATE valsanv_ZAGIMORE_DS.ProductDimension
+SET pd_loaded = TRUE;
+
+-- update the "ExtractionTimestamp" column in the ProductDimension for existing rows
+UPDATE valsanv_ZAGIMORE_DS.ProductDimension
+SET ExtractionTimestamp = NOW() - INTERVAL (7) DAY;
+
+-- 3-2. Create one more product in the product table of the ZAGIMORE operational database.
+-- new product
+INSERT INTO valsanv_ZAGIMORE.product ( productid, productname, productprice, vendorid, categoryid ) 
+VALUES ( "1Y1", "Test Product", 250.00, "PG", "CL" );
+-- new rental product
+INSERT INTO valsanv_ZAGIMORE.rentalProducts ( productid, productname, productpricedaily, productpriceweekly, vendorid, categoryid ) 
+VALUES ( "1Z1", "Test Rental Product", 25.00, 100.00, "PG", "CL" );
+
+-- 03 - Product Dimension refresh code for both sale and rental products
+INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, ExtractionTimestamp, pd_loaded)
+SELECT p.productid, p.productname, p.vendorid, p.categoryid, v.vendorname, c.categoryname, "S", p.productprice, NULL, NULL, NOW(), FALSE
+FROM valsanv_ZAGIMORE.product p
+JOIN valsanv_ZAGIMORE.vendor v ON p.vendorid = v.vendorid
+JOIN valsanv_ZAGIMORE.category c ON p.categoryid = c.categoryid
+WHERE p.productid NOT IN (SELECT DISTINCT ProductID FROM valsanv_ZAGIMORE_DS.ProductDimension WHERE ProductType = "S") -- NOTE: now we're filtering using the tid column instead of the tdate column
+UNION -- UNION keyword is used to combine the results of two queries into a single result set
+SELECT r.productid, r.productname, r.vendorid, r.categoryid, v.vendorname, c.categoryname, "R", NULL, r.productpricedaily, r.productpriceweekly, NOW(), FALSE
+FROM valsanv_ZAGIMORE.rentalProducts r
+JOIN valsanv_ZAGIMORE.vendor v ON r.vendorid = v.vendorid
+JOIN valsanv_ZAGIMORE.category c ON r.categoryid = c.categoryid
+WHERE r.productid NOT IN (SELECT DISTINCT ProductID FROM valsanv_ZAGIMORE_DS.ProductDimension WHERE ProductType = "R");
+
+-- Loading new instances of Products from DS to DW
+INSERT INTO valsanv_ZAGIMORE_DW.ProductDimension (ProductKey, ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly)
+SELECT ProductKey, ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly
+FROM valsanv_ZAGIMORE_DS.ProductDimension
+WHERE pd_loaded = FALSE;
+-- Updating the "pd_loaded" column in the ProductDimension to show that the data has been loaded
+UPDATE valsanv_ZAGIMORE_DS.ProductDimension
+SET pd_loaded = TRUE
+WHERE pd_loaded = FALSE;
+
+-- new product
+INSERT INTO valsanv_ZAGIMORE.product ( productid, productname, productprice, vendorid, categoryid ) 
+VALUES ( "1Y2", "Test Product 02", 250.00, "PG", "CL" );
+-- new rental product
+INSERT INTO valsanv_ZAGIMORE.rentalProducts ( productid, productname, productpricedaily, productpriceweekly, vendorid, categoryid ) 
+VALUES ( "1Z2", "Test Rental Product 02", 25.00, 100.00, "PG", "CL" );
+
+-- Creating a procedure for Product refresh
+DROP PROCEDURE IF EXISTS product_dimension_refresh;
+DELIMITER $$$
+CREATE PROCEDURE product_dimension_refresh()
+BEGIN
+    -- 03 - Product Dimension refresh code for both sale and rental products
+    INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, ExtractionTimestamp, pd_loaded)
+    SELECT p.productid, p.productname, p.vendorid, p.categoryid, v.vendorname, c.categoryname, "S", p.productprice, NULL, NULL, NOW(), FALSE
+    FROM valsanv_ZAGIMORE.product p
+    JOIN valsanv_ZAGIMORE.vendor v ON p.vendorid = v.vendorid
+    JOIN valsanv_ZAGIMORE.category c ON p.categoryid = c.categoryid
+    WHERE p.productid NOT IN (SELECT DISTINCT ProductID FROM valsanv_ZAGIMORE_DS.ProductDimension WHERE ProductType = "S") -- NOTE: now we're filtering using the tid column instead of the tdate column
+    UNION -- UNION keyword is used to combine the results of two queries into a single result set
+    SELECT r.productid, r.productname, r.vendorid, r.categoryid, v.vendorname, c.categoryname, "R", NULL, r.productpricedaily, r.productpriceweekly, NOW(), FALSE
+    FROM valsanv_ZAGIMORE.rentalProducts r
+    JOIN valsanv_ZAGIMORE.vendor v ON r.vendorid = v.vendorid
+    JOIN valsanv_ZAGIMORE.category c ON r.categoryid = c.categoryid
+    WHERE r.productid NOT IN (SELECT DISTINCT ProductID FROM valsanv_ZAGIMORE_DS.ProductDimension WHERE ProductType = "R");
+
+    -- Loading new instances of Products from DS to DW
+    INSERT INTO valsanv_ZAGIMORE_DW.ProductDimension (ProductKey, ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly)
+    SELECT ProductKey, ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly
+    FROM valsanv_ZAGIMORE_DS.ProductDimension
+    WHERE pd_loaded = FALSE;
+
+    UPDATE valsanv_ZAGIMORE_DS.ProductDimension
+    SET pd_loaded = TRUE
+    WHERE pd_loaded = FALSE;
+END$$$
+DELIMITER ;
+
+-- Calling the procedure
+CALL product_dimension_refresh();
+
+-- new product
+INSERT INTO valsanv_ZAGIMORE.product ( productid, productname, productprice, vendorid, categoryid ) 
+VALUES ( "1Y3", "Test Product 03", 250.00, "PG", "CL" );
+-- new rental product
+INSERT INTO valsanv_ZAGIMORE.rentalProducts ( productid, productname, productpricedaily, productpriceweekly, vendorid, categoryid ) 
+VALUES ( "1Z3", "Test Rental Product 03", 25.00, 100.00, "PG", "CL" );
+
+-- Calling the procedure
+CALL product_dimension_refresh();
+
+-- add sanity check
+-- write code for customer dimension by Wednesday

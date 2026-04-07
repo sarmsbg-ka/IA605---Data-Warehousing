@@ -1,3 +1,5 @@
+-- These codes were written to assist a few of my peers who were facing issues with the ETL process.
+
 -- DELETE
 SELECT *
 FROM DailyStoreSnapshot
