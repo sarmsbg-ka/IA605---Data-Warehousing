@@ -520,9 +520,9 @@ INSERT INTO valsanv_ZAGIMORE.rentalProducts ( productid, productname, productpri
 VALUES ( "1Z2", "Test Rental Product 02", 25.00, 100.00, "PG", "CL" );
 
 -- Creating a procedure for Product refresh
-DROP PROCEDURE IF EXISTS product_dimension_refresh;
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.product_dimension_refresh;
 DELIMITER $$$
-CREATE PROCEDURE product_dimension_refresh()
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.product_dimension_refresh()
 BEGIN
     -- 03 - Product Dimension refresh code for both sale and rental products
     INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, ExtractionTimestamp, pd_loaded)
@@ -551,7 +551,7 @@ END$$$
 DELIMITER ;
 
 -- Calling the procedure
-CALL product_dimension_refresh();
+CALL valsanv_ZAGIMORE_DS.product_dimension_refresh();
 
 -- new product
 INSERT INTO valsanv_ZAGIMORE.product ( productid, productname, productprice, vendorid, categoryid ) 
@@ -561,7 +561,182 @@ INSERT INTO valsanv_ZAGIMORE.rentalProducts ( productid, productname, productpri
 VALUES ( "1Z3", "Test Rental Product 03", 25.00, 100.00, "PG", "CL" );
 
 -- Calling the procedure
-CALL product_dimension_refresh();
+CALL valsanv_ZAGIMORE_DS.product_dimension_refresh();
 
--- add sanity check
--- write code for customer dimension by Wednesday
+-- Self: 04-06-2026
+-- Sanity check for product_dimension_refresh
+-- Validates that row counts are consistent across the operational DB, DS, and DW for ProductDimension.
+-- Note: This check is valid only when the grain of ProductDimension is one row per product per product type
+-- (i.e., a product that exists as both Sale and Rental will appear as two rows in ProductDimension).
+-- =========================================================================================================================
+
+-- Creating the procedure
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.sp_validate_product_dimension;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.sp_validate_product_dimension()
+BEGIN
+    DECLARE sale_src_count INT DEFAULT 0;
+    DECLARE rental_src_count INT DEFAULT 0;
+    DECLARE src_total INT DEFAULT 0;
+    DECLARE ds_sale_count INT DEFAULT 0;
+    DECLARE ds_rental_count INT DEFAULT 0;
+    DECLARE ds_total INT DEFAULT 0;
+    DECLARE dw_sale_count INT DEFAULT 0;
+    DECLARE dw_rental_count INT DEFAULT 0;
+    DECLARE dw_total INT DEFAULT 0;
+
+    -- Count sale and rental products in the operational DB
+    SELECT COUNT(*) INTO sale_src_count
+    FROM valsanv_ZAGIMORE.product;
+
+    SELECT COUNT(*) INTO rental_src_count
+    FROM valsanv_ZAGIMORE.rentalProducts;
+
+    SET src_total = sale_src_count + rental_src_count;
+
+    -- Count sale and rental products in the DS ProductDimension
+    SELECT COUNT(*) INTO ds_sale_count
+    FROM valsanv_ZAGIMORE_DS.ProductDimension
+    WHERE ProductType = 'S';
+
+    SELECT COUNT(*) INTO ds_rental_count
+    FROM valsanv_ZAGIMORE_DS.ProductDimension
+    WHERE ProductType = 'R';
+
+    SET ds_total = ds_sale_count + ds_rental_count;
+
+    -- Count sale and rental products in the DW ProductDimension
+    SELECT COUNT(*) INTO dw_sale_count
+    FROM valsanv_ZAGIMORE_DW.ProductDimension
+    WHERE ProductType = 'S';
+
+    SELECT COUNT(*) INTO dw_rental_count
+    FROM valsanv_ZAGIMORE_DW.ProductDimension
+    WHERE ProductType = 'R';
+
+    SET dw_total = dw_sale_count + dw_rental_count;
+
+    SELECT
+        sale_src_count      AS src_sale_rows,
+        rental_src_count    AS src_rental_rows,
+        src_total           AS src_total,
+        ds_sale_count       AS ds_sale_rows,
+        ds_rental_count     AS ds_rental_rows,
+        ds_total            AS ds_total,
+        dw_sale_count       AS dw_sale_rows,
+        dw_rental_count     AS dw_rental_rows,
+        dw_total            AS dw_total,
+        (src_total - ds_total)  AS source_minus_ds,
+        (ds_total - dw_total)   AS ds_minus_dw,
+        CASE
+            WHEN src_total = ds_total AND ds_total = dw_total THEN 'PASS'
+            ELSE 'FAIL'
+        END AS validation_status;
+END$$$
+
+DELIMITER ;
+
+-- Calling the procedure sp_validate_product_dimension to validate the data consistency for ProductDimension
+CALL valsanv_ZAGIMORE_DS.sp_validate_product_dimension();
+
+-- new product
+INSERT INTO valsanv_ZAGIMORE.product ( productid, productname, productprice, vendorid, categoryid ) 
+VALUES ( "1Y4", "Test Product 04", 250.00, "PG", "CL" );
+-- new rental product
+INSERT INTO valsanv_ZAGIMORE.rentalProducts ( productid, productname, productpricedaily, productpriceweekly, vendorid, categoryid ) 
+VALUES ( "1Z4", "Test Rental Product 04", 25.00, 100.00, "PG", "CL" );
+
+-- Note: Calling the procedure sp_validate_product_dimension right after the new data is inserted resulted in a FAIL status. Once the procedure product_dimension_refresh is called, the data consistency is restored as verified by sp_validate_product_dimension with PASS status
+
+-- Homework: due on Wednesday, 04-08-2026
+-- Create the ETL procedure for CustomerDimension refresh
+-- =========================================================================================================================
+
+-- Add control columns to DS CustomerDimension (mirrors the pattern used for ProductDimension and RevenueFactTable)
+ALTER TABLE valsanv_ZAGIMORE_DS.CustomerDimension
+ADD COLUMN ExtractionTimestamp TIMESTAMP,
+ADD COLUMN cd_loaded BOOLEAN;
+
+-- Mark all existing rows as already loaded into the DW
+UPDATE valsanv_ZAGIMORE_DS.CustomerDimension
+SET cd_loaded = TRUE;
+
+-- Set ExtractionTimestamp for existing rows to simulate a past load
+UPDATE valsanv_ZAGIMORE_DS.CustomerDimension
+SET ExtractionTimestamp = NOW() - INTERVAL (14) DAY;
+
+-- Creating a procedure for Customer Dimension refresh
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.customer_dimension_refresh;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.customer_dimension_refresh()
+BEGIN
+    -- Insert new customers from the operational DB that are not yet in the DS CustomerDimension
+    INSERT INTO valsanv_ZAGIMORE_DS.CustomerDimension (CustomerID, CustomerName, CustomerZip, ExtractionTimestamp, cd_loaded)
+    SELECT c.customerid, c.customername, c.customerzip, NOW(), FALSE
+    FROM valsanv_ZAGIMORE.customer c
+    WHERE c.customerid NOT IN (SELECT DISTINCT CustomerID FROM valsanv_ZAGIMORE_DS.CustomerDimension);
+
+    -- Load new customers (cd_loaded = FALSE) from DS into the DW CustomerDimension
+    INSERT INTO valsanv_ZAGIMORE_DW.CustomerDimension (CustomerKey, CustomerID, CustomerName, CustomerZip)
+    SELECT CustomerKey, CustomerID, CustomerName, CustomerZip
+    FROM valsanv_ZAGIMORE_DS.CustomerDimension
+    WHERE cd_loaded = FALSE;
+
+    -- Mark the newly loaded rows as loaded
+    UPDATE valsanv_ZAGIMORE_DS.CustomerDimension
+    SET cd_loaded = TRUE
+    WHERE cd_loaded = FALSE;
+END$$$
+
+DELIMITER ;
+
+-- Insert a new customer into the operational DB to test the procedure
+INSERT INTO valsanv_ZAGIMORE.customer (customerid, customername, customerzip)
+VALUES ("9-1-001", "Customer 001", "55499");
+
+-- Calling the procedure
+CALL valsanv_ZAGIMORE_DS.customer_dimension_refresh();
+
+-- Sanity check for customer_dimension_refresh
+-- Validates that row counts are consistent across the operational DB, DS, and DW for CustomerDimension.
+-- =========================================================================================================================
+
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.sp_validate_customer_dimension;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.sp_validate_customer_dimension()
+BEGIN
+    DECLARE src_count INT DEFAULT 0;
+    DECLARE ds_count INT DEFAULT 0;
+    DECLARE dw_count INT DEFAULT 0;
+
+    SELECT COUNT(*) INTO src_count
+    FROM valsanv_ZAGIMORE.customer;
+
+    SELECT COUNT(*) INTO ds_count
+    FROM valsanv_ZAGIMORE_DS.CustomerDimension;
+
+    SELECT COUNT(*) INTO dw_count
+    FROM valsanv_ZAGIMORE_DW.CustomerDimension;
+
+    SELECT
+        src_count               AS src_rows,
+        ds_count                AS ds_rows,
+        dw_count                AS dw_rows,
+        (src_count - ds_count)  AS source_minus_ds,
+        (ds_count - dw_count)   AS ds_minus_dw,
+        CASE
+            WHEN src_count = ds_count AND ds_count = dw_count THEN 'PASS'
+            ELSE 'FAIL'
+        END AS validation_status;
+END$$$
+
+DELIMITER ;
+
+-- Calling the procedure
+CALL valsanv_ZAGIMORE_DS.sp_validate_customer_dimension();
