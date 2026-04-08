@@ -141,7 +141,7 @@ DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
 
 -- Create a procedure for daily fact refresh
 DELIMITER $$$
-CREATE PROCEDURE daily_fact_refresh()
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.daily_fact_refresh()
 BEGIN
 -- Now we can "update/refresh" our valsanv_ZAGIMORE_DS.IntermediateFactTable with only the new facts
 DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
@@ -247,7 +247,7 @@ INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALU
 
 -- Creating procedure late_arriving_fact_refresh()
 DELIMITER $$$
-CREATE PROCEDURE late_arriving_fact_refresh()
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.late_arriving_fact_refresh()
 BEGIN
 -- Now we can "update/refresh" our valsanv_ZAGIMORE_DS.IntermediateFactTable with only the new facts
 DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
@@ -350,11 +350,11 @@ INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALU
 
 -- Self: 04-05-2026
 -- Modifying the sanity check query and making it a stored procedure. This will make it easier to perform the sanity check on a regular basis and confirm that the row counts are consistent.
-DROP PROCEDURE IF EXISTS sp_validate_row_counts;
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.sp_validate_row_counts;
 
 DELIMITER $$$
 
-CREATE PROCEDURE sp_validate_row_counts()
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.sp_validate_row_counts()
 BEGIN
     SELECT 'soldvia' AS table_name, COUNT(*) AS row_count
     FROM valsanv_ZAGIMORE.soldvia
@@ -379,11 +379,11 @@ DELIMITER ;
 
 -- Create a stored procedure to validate the row counts in the source and destination tables
 -- Note: This is an enhanced version of sp_validate_row_counts. The logic for both these stored procedures is valid only if RevenueFactTable is supposed to contain exactly one row for every row in soldvia and in rentvia tables. If our fact table grain is different, then row counts may not match even when the load is correct.
-DROP PROCEDURE IF EXISTS sp_validate_row_counts_enhanced;
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.sp_validate_row_counts_enhanced;
 
 DELIMITER $$$
 
-CREATE PROCEDURE sp_validate_row_counts_enhanced()
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.sp_validate_row_counts_enhanced()
 BEGIN
     DECLARE soldvia_count INT DEFAULT 0;
     DECLARE rentvia_count INT DEFAULT 0;
@@ -740,3 +740,81 @@ DELIMITER ;
 
 -- Calling the procedure
 CALL valsanv_ZAGIMORE_DS.sp_validate_customer_dimension();
+
+-- Insert a new customer into the operational DB to test the procedure
+INSERT INTO valsanv_ZAGIMORE.customer (customerid, customername, customerzip)
+VALUES ("9-1-002", "Customer 002", "55499");
+
+-- Calling the procedure
+CALL valsanv_ZAGIMORE_DS.sp_validate_customer_dimension();
+
+-- Calling the procedure
+CALL valsanv_ZAGIMORE_DS.customer_dimension_refresh();
+
+-- =========================================================================================================================
+-- Lecture 04/08/2026: Week 10 & 11 : ETL, Part 5 & 6
+-- In class exercise narrative ETL part 2: dealing with new facts and changing dimensions - Continued
+-- =========================================================================================================================
+
+-- new product
+INSERT INTO valsanv_ZAGIMORE.product ( productid, productname, productprice, vendorid, categoryid ) 
+VALUES ( "1Y5", "Test Product 05", 250.00, "PG", "CL" );
+-- new rental product
+INSERT INTO valsanv_ZAGIMORE.rentalProducts ( productid, productname, productpricedaily, productpriceweekly, vendorid, categoryid ) 
+VALUES ( "1Z5", "Test Rental Product 05", 25.00, 100.00, "PG", "CL" );
+
+-- Handling Type-2 Changes for Customer Dimension
+-- Adding 3 Type-2 change tracking columns to the Customer Dimension in DS and setting their initial values
+ALTER TABLE valsanv_ZAGIMORE_DS.CustomerDimension
+ADD DateValidFrom Date,
+ADD DateValidUntil Date,
+ADD CurrentStatus BOOLEAN;
+
+UPDATE valsanv_ZAGIMORE_DS.CustomerDimension
+SET DateValidFrom = '2013-01-01', DateValidUntil = '2035-01-01', CurrentStatus = TRUE;
+
+-- Adding 3 Type-2 change tracking columns to the Customer Dimension in DW and setting their initial values
+ALTER TABLE valsanv_ZAGIMORE_DW.CustomerDimension
+ADD DateValidFrom Date,
+ADD DateValidUntil Date,
+ADD CurrentStatus BOOLEAN;
+
+UPDATE valsanv_ZAGIMORE_DW.CustomerDimension
+SET DateValidFrom = '2013-01-01', DateValidUntil = '2035-01-01', CurrentStatus = TRUE;
+
+UPDATE `customer` SET `customerzip` = '66666' WHERE `customer`.`customerid` = '2-3-444';
+
+-- Check: Updating existing rows in the Product Dimension whose name or zipcode (or both) has changed by setting their DateValidUntil to yesterday's date and CurrentStatus to FALSE
+SELECT cd.CustomerKey, cd.CustomerID, cd.CustomerName, cd.CustomerZip, cd.DateValidFrom, cd.DateValidUntil, cd.CurrentStatus
+FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
+WHERE c.customerid = cd.CustomerID
+AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
+
+-- Updating existing rows in the Customer Dimension whose name or zipcode (or both) has changed by setting their DateValidUntil to yesterday's date and CurrentStatus to FALSE
+UPDATE valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
+SET cd.DateValidUntil = NOW() - INTERVAL 1 DAY, cd.CurrentStatus = FALSE, cd_loaded = FALSE
+WHERE c.customerid = cd.CustomerID
+AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
+
+
+SELECT cd.CustomerKey, cd.CustomerID, cd.CustomerName, cd.CustomerZip, cd.DateValidFrom, cd.DateValidUntil, cd.CurrentStatus
+FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
+WHERE c.customerid = cd.CustomerID
+AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
+
+-- Inserting new rows in the Customer Dimension for those customers whose name, zipcode or both changed
+INSERT INTO valsanv_ZAGIMORE_DS.CustomerDimension (CustomerID, CustomerName, CustomerZip, ExtractionTimestamp, cd_loaded, DateValidFrom, DateValidUntil, CurrentStatus)
+SELECT c.customerid, c.customername, c.customerzip, NOW(), FALSE, NOW(), '2035-01-01', TRUE
+FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
+WHERE c.customerid = cd.CustomerID
+AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
+
+-- Loading the Customer Dimension in DW with all the changed rows and new rows from Customer Dimension in DS
+REPLACE INTO valsanv_ZAGIMORE_DW.CustomerDimension (CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus)
+SELECT CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus
+FROM valsanv_ZAGIMORE_DS.CustomerDimension
+WHERE cd_loaded = FALSE;
+
+-- Drop foreign key - perform insert, then add back the foreign key
+/* ALTER TABLE valsanv_ZAGIMORE_DW.CustomerDimension DROP FOREIGN KEY CustomerDimension_ibfk_1;
+REPLACE INTO valsanv_ZAGIMORE_DW.CustomerDimension (CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus) */
