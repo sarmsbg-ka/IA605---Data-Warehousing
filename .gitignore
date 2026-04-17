@@ -23,6 +23,7 @@ Thumbs.db
 *.csv
 *.xlsx
 *.zip
+*.pdf
 
 # =========================
 # IDE / Editor
@@ -49,6 +50,7 @@ Week 03 - Data Warehouse Modeling - Part 2/
 Week 04 - Data Warehouse Modeling - Part 3/
 Week 05 - Data Warehouse Modeling - Part 4/
 Week 06 - Data Warehouse Modeling - Part 5/
+ETL_Spring_2026/
 
 # =========================
 # Files

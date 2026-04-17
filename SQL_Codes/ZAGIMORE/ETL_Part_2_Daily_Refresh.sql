@@ -143,70 +143,70 @@ DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
 DELIMITER $$$
 CREATE PROCEDURE valsanv_ZAGIMORE_DS.daily_fact_refresh()
 BEGIN
--- Now we can "update/refresh" our valsanv_ZAGIMORE_DS.IntermediateFactTable with only the new facts
-DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
--- Create a new valsanv_ZAGIMORE_DS.IntermediateFactTable
-CREATE TABLE IF NOT EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable AS
--- Using the same SELECT query we used above to check the data
-SELECT sv.noofitems * p.productprice AS DollarAmount, "Sale" AS RevenueSource, sv.tid, p.productid, s.storeid, s.tdate AS FullDate, s.customerid
-FROM valsanv_ZAGIMORE.soldvia as sv, valsanv_ZAGIMORE.product p, valsanv_ZAGIMORE.salestransaction s
-WHERE sv.productid = p.productid 
-AND sv.tid = s.tid
-AND s.tdate > (SELECT MAX(ExtractionTimestamp) FROM valsanv_ZAGIMORE_DS.RevenueFactTable) -- filter out the records that are already in the fact table
-UNION
-SELECT rv.duration * r.productpricedaily AS DollarAmount, "Rental_Daily" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
-FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
-WHERE rv.productid = r.productid 
-AND rv.tid = rt.tid
-AND rv.rentaltype = "D"
-AND rt.tdate > (SELECT MAX(ExtractionTimestamp) FROM valsanv_ZAGIMORE_DS.RevenueFactTable) -- filter out the records that are already in the fact table
-UNION
-SELECT rv.duration * r.productpriceweekly AS DollarAmount, "Rental_Weekly" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
-FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
-WHERE rv.productid = r.productid 
-AND rv.tid = rt.tid
-AND rv.rentaltype = "W"
-AND rt.tdate > (SELECT MAX(ExtractionTimestamp) FROM valsanv_ZAGIMORE_DS.RevenueFactTable); -- filter out the records that are already in the fact table
+    -- Now we can "update/refresh" our valsanv_ZAGIMORE_DS.IntermediateFactTable with only the new facts
+    DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
+    -- Create a new valsanv_ZAGIMORE_DS.IntermediateFactTable
+    CREATE TABLE IF NOT EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable AS
+    -- Using the same SELECT query we used above to check the data
+    SELECT sv.noofitems * p.productprice AS DollarAmount, "Sale" AS RevenueSource, sv.tid, p.productid, s.storeid, s.tdate AS FullDate, s.customerid
+    FROM valsanv_ZAGIMORE.soldvia as sv, valsanv_ZAGIMORE.product p, valsanv_ZAGIMORE.salestransaction s
+    WHERE sv.productid = p.productid 
+    AND sv.tid = s.tid
+    AND s.tdate > (SELECT MAX(ExtractionTimestamp) FROM valsanv_ZAGIMORE_DS.RevenueFactTable) -- filter out the records that are already in the fact table
+    UNION
+    SELECT rv.duration * r.productpricedaily AS DollarAmount, "Rental_Daily" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
+    FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
+    WHERE rv.productid = r.productid 
+    AND rv.tid = rt.tid
+    AND rv.rentaltype = "D"
+    AND rt.tdate > (SELECT MAX(ExtractionTimestamp) FROM valsanv_ZAGIMORE_DS.RevenueFactTable) -- filter out the records that are already in the fact table
+    UNION
+    SELECT rv.duration * r.productpriceweekly AS DollarAmount, "Rental_Weekly" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
+    FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
+    WHERE rv.productid = r.productid 
+    AND rv.tid = rt.tid
+    AND rv.rentaltype = "W"
+    AND rt.tdate > (SELECT MAX(ExtractionTimestamp) FROM valsanv_ZAGIMORE_DS.RevenueFactTable); -- filter out the records that are already in the fact table
 
-/* Noticed that the collation of the RevenueSource column in the valsanv_ZAGIMORE_DS.IntermediateFactTable is utf8mb4_general_ci. Let's fix that. We need to change the collation of the RevenueSource column in the IntermediateFactTable to match the collation of the other columns, which is utf8mb4_0900_ai_ci 
-We'll also adjust the data type of the RevenueSource column from VARCHAR(13) to VARCHAR(25). When we didn't specify a collation and the data type, the default collation was utf8mb4_general_ci and the data type was VARCHAR(13) derived from the length of the longest string in the column (Rental_Weekly) 
-With this we match the collattion and data type of the RevenueSource column in the IntermediateFactTable with the collation and data type of the RevenueSource column in the RevenueFactTable. */
-ALTER TABLE valsanv_ZAGIMORE_DS.IntermediateFactTable
-MODIFY COLUMN RevenueSource VARCHAR(25) COLLATE utf8mb4_0900_ai_ci NOT NULL;
+    /* Noticed that the collation of the RevenueSource column in the valsanv_ZAGIMORE_DS.IntermediateFactTable is utf8mb4_general_ci. Let's fix that. We need to change the collation of the RevenueSource column in the IntermediateFactTable to match the collation of the other columns, which is utf8mb4_0900_ai_ci 
+    We'll also adjust the data type of the RevenueSource column from VARCHAR(13) to VARCHAR(25). When we didn't specify a collation and the data type, the default collation was utf8mb4_general_ci and the data type was VARCHAR(13) derived from the length of the longest string in the column (Rental_Weekly) 
+    With this we match the collattion and data type of the RevenueSource column in the IntermediateFactTable with the collation and data type of the RevenueSource column in the RevenueFactTable. */
+    ALTER TABLE valsanv_ZAGIMORE_DS.IntermediateFactTable
+    MODIFY COLUMN RevenueSource VARCHAR(25) COLLATE utf8mb4_0900_ai_ci NOT NULL;
 
--- Now we'll populate the valsanv_ZAGIMORE_DS.RevenueFactTable with the new data from valsanv_ZAGIMORE_DS.IntermediateFactTable
--- Here we're using a modified version of the query we used for initial mapping of rows from intermediate fact table into the fact table
-INSERT INTO valsanv_ZAGIMORE_DS.RevenueFactTable(DollarAmount, RevenueSource, TID, CustomerKey, StoreKey, CalendarKey, ProductKey, ExtractionTimestamp, f_loaded) -- added two columns "ExtractionTimestamp" and "f_loaded"
-SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), FALSE -- set f_loaded to FALSE. We can use FALSE or 0 to indicate that the data is not yet loaded
-FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i, valsanv_ZAGIMORE_DS.CustomerDimension AS cd, valsanv_ZAGIMORE_DS.StoreDimension AS sd, valsanv_ZAGIMORE_DS.CalendarDimension AS cad, valsanv_ZAGIMORE_DS.ProductDimension AS pd
-WHERE cd.CustomerID = i.customerid
-AND sd.StoreID = i.storeid
-AND cad.FullDate = i.FullDate
-AND pd.ProductID = i.productid
-AND i.RevenueSource = "Sale" 
-AND pd.ProductType = "S" -- we have same product IDs under two different product types
-UNION
-SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), 0 -- set f_loaded to FALSE. We can use FALSE or 0 to indicate that the data is not yet loaded
-FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i, valsanv_ZAGIMORE_DS.CustomerDimension AS cd, valsanv_ZAGIMORE_DS.StoreDimension AS sd, valsanv_ZAGIMORE_DS.CalendarDimension AS cad, valsanv_ZAGIMORE_DS.ProductDimension AS pd
-WHERE cd.CustomerID = i.customerid
-AND sd.StoreID = i.storeid
-AND cad.FullDate = i.FullDate
-AND pd.ProductID = i.productid
-AND i.RevenueSource IN ("Rental_Weekly", "Rental_Daily") 
-AND pd.ProductType = "R"; -- we have same product IDs under two different product types
+    -- Now we'll populate the valsanv_ZAGIMORE_DS.RevenueFactTable with the new data from valsanv_ZAGIMORE_DS.IntermediateFactTable
+    -- Here we're using a modified version of the query we used for initial mapping of rows from intermediate fact table into the fact table
+    INSERT INTO valsanv_ZAGIMORE_DS.RevenueFactTable(DollarAmount, RevenueSource, TID, CustomerKey, StoreKey, CalendarKey, ProductKey, ExtractionTimestamp, f_loaded) -- added two columns "ExtractionTimestamp" and "f_loaded"
+    SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), FALSE -- set f_loaded to FALSE. We can use FALSE or 0 to indicate that the data is not yet loaded
+    FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i, valsanv_ZAGIMORE_DS.CustomerDimension AS cd, valsanv_ZAGIMORE_DS.StoreDimension AS sd, valsanv_ZAGIMORE_DS.CalendarDimension AS cad, valsanv_ZAGIMORE_DS.ProductDimension AS pd
+    WHERE cd.CustomerID = i.customerid
+    AND sd.StoreID = i.storeid
+    AND cad.FullDate = i.FullDate
+    AND pd.ProductID = i.productid
+    AND i.RevenueSource = "Sale" 
+    AND pd.ProductType = "S" -- we have same product IDs under two different product types
+    UNION
+    SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), 0 -- set f_loaded to FALSE. We can use FALSE or 0 to indicate that the data is not yet loaded
+    FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i, valsanv_ZAGIMORE_DS.CustomerDimension AS cd, valsanv_ZAGIMORE_DS.StoreDimension AS sd, valsanv_ZAGIMORE_DS.CalendarDimension AS cad, valsanv_ZAGIMORE_DS.ProductDimension AS pd
+    WHERE cd.CustomerID = i.customerid
+    AND sd.StoreID = i.storeid
+    AND cad.FullDate = i.FullDate
+    AND pd.ProductID = i.productid
+    AND i.RevenueSource IN ("Rental_Weekly", "Rental_Daily") 
+    AND pd.ProductType = "R"; -- we have same product IDs under two different product types
 
 
--- Load the new facts from valsanv_ZAGIMORE_DS.RevenueFactTable into valsanv_ZAGIMORE_DW.RevenueFactTable
-INSERT INTO valsanv_ZAGIMORE_DW.RevenueFactTable (DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey)
-SELECT DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey
-FROM valsanv_ZAGIMORE_DS.RevenueFactTable
-WHERE f_loaded = FALSE;
--- Update the f_loaded column in valsanv_ZAGIMORE_DS.RevenueFactTable to TRUE or 1 for the newly loaded facts to indicate that they have been loaded
-UPDATE valsanv_ZAGIMORE_DS.RevenueFactTable
-SET f_loaded = TRUE
-WHERE f_loaded = FALSE;
--- Now we can drop our valsanv_ZAGIMORE_DS.IntermediateFactTable. This is just a temporary table, which we won't keep in a production environment
-DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
+    -- Load the new facts from valsanv_ZAGIMORE_DS.RevenueFactTable into valsanv_ZAGIMORE_DW.RevenueFactTable
+    INSERT INTO valsanv_ZAGIMORE_DW.RevenueFactTable (DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey)
+    SELECT DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey
+    FROM valsanv_ZAGIMORE_DS.RevenueFactTable
+    WHERE f_loaded = FALSE;
+    -- Update the f_loaded column in valsanv_ZAGIMORE_DS.RevenueFactTable to TRUE or 1 for the newly loaded facts to indicate that they have been loaded
+    UPDATE valsanv_ZAGIMORE_DS.RevenueFactTable
+    SET f_loaded = TRUE
+    WHERE f_loaded = FALSE;
+    -- Now we can drop our valsanv_ZAGIMORE_DS.IntermediateFactTable. This is just a temporary table, which we won't keep in a production environment
+    DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
 
 END $$$
 DELIMITER ;
@@ -249,70 +249,70 @@ INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALU
 DELIMITER $$$
 CREATE PROCEDURE valsanv_ZAGIMORE_DS.late_arriving_fact_refresh()
 BEGIN
--- Now we can "update/refresh" our valsanv_ZAGIMORE_DS.IntermediateFactTable with only the new facts
-DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
--- Create a new valsanv_ZAGIMORE_DS.IntermediateFactTable
-CREATE TABLE IF NOT EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable AS
--- Using the same SELECT query we used above to check the data
-SELECT sv.noofitems * p.productprice AS DollarAmount, "Sale" AS RevenueSource, sv.tid, p.productid, s.storeid, s.tdate AS FullDate, s.customerid
-FROM valsanv_ZAGIMORE.soldvia as sv, valsanv_ZAGIMORE.product p, valsanv_ZAGIMORE.salestransaction s
-WHERE sv.productid = p.productid 
-AND sv.tid = s.tid
-AND s.tid NOT IN (SELECT DISTINCT tid FROM valsanv_ZAGIMORE_DS.RevenueFactTable) -- NOTE: now we're filtering using the tid column instead of the tdate column
-UNION
-SELECT rv.duration * r.productpricedaily AS DollarAmount, "Rental_Daily" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
-FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
-WHERE rv.productid = r.productid 
-AND rv.tid = rt.tid
-AND rv.rentaltype = "D"
-AND rt.tid NOT IN (SELECT DISTINCT tid FROM valsanv_ZAGIMORE_DS.RevenueFactTable) -- filter out the records that are already in the fact table
-UNION
-SELECT rv.duration * r.productpriceweekly AS DollarAmount, "Rental_Weekly" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
-FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
-WHERE rv.productid = r.productid 
-AND rv.tid = rt.tid
-AND rv.rentaltype = "W"
-AND rt.tid NOT IN (SELECT DISTINCT tid FROM valsanv_ZAGIMORE_DS.RevenueFactTable); -- filter out the records that are already in the fact table
+    -- Now we can "update/refresh" our valsanv_ZAGIMORE_DS.IntermediateFactTable with only the new facts
+    DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
+    -- Create a new valsanv_ZAGIMORE_DS.IntermediateFactTable
+    CREATE TABLE IF NOT EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable AS
+    -- Using the same SELECT query we used above to check the data
+    SELECT sv.noofitems * p.productprice AS DollarAmount, "Sale" AS RevenueSource, sv.tid, p.productid, s.storeid, s.tdate AS FullDate, s.customerid
+    FROM valsanv_ZAGIMORE.soldvia as sv, valsanv_ZAGIMORE.product p, valsanv_ZAGIMORE.salestransaction s
+    WHERE sv.productid = p.productid 
+    AND sv.tid = s.tid
+    AND s.tid NOT IN (SELECT DISTINCT tid FROM valsanv_ZAGIMORE_DS.RevenueFactTable) -- NOTE: now we're filtering using the tid column instead of the tdate column
+    UNION
+    SELECT rv.duration * r.productpricedaily AS DollarAmount, "Rental_Daily" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
+    FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
+    WHERE rv.productid = r.productid 
+    AND rv.tid = rt.tid
+    AND rv.rentaltype = "D"
+    AND rt.tid NOT IN (SELECT DISTINCT tid FROM valsanv_ZAGIMORE_DS.RevenueFactTable) -- filter out the records that are already in the fact table
+    UNION
+    SELECT rv.duration * r.productpriceweekly AS DollarAmount, "Rental_Weekly" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
+    FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
+    WHERE rv.productid = r.productid 
+    AND rv.tid = rt.tid
+    AND rv.rentaltype = "W"
+    AND rt.tid NOT IN (SELECT DISTINCT tid FROM valsanv_ZAGIMORE_DS.RevenueFactTable); -- filter out the records that are already in the fact table
 
-/* Noticed that the collation of the RevenueSource column in the valsanv_ZAGIMORE_DS.IntermediateFactTable is utf8mb4_general_ci. Let's fix that. We need to change the collation of the RevenueSource column in the IntermediateFactTable to match the collation of the other columns, which is utf8mb4_0900_ai_ci 
-We'll also adjust the data type of the RevenueSource column from VARCHAR(13) to VARCHAR(25). When we didn't specify a collation and the data type, the default collation was utf8mb4_general_ci and the data type was VARCHAR(13) derived from the length of the longest string in the column (Rental_Weekly) 
-With this we match the collattion and data type of the RevenueSource column in the IntermediateFactTable with the collation and data type of the RevenueSource column in the RevenueFactTable. */
-ALTER TABLE valsanv_ZAGIMORE_DS.IntermediateFactTable
-MODIFY COLUMN RevenueSource VARCHAR(25) COLLATE utf8mb4_0900_ai_ci NOT NULL;
+    /* Noticed that the collation of the RevenueSource column in the valsanv_ZAGIMORE_DS.IntermediateFactTable is utf8mb4_general_ci. Let's fix that. We need to change the collation of the RevenueSource column in the IntermediateFactTable to match the collation of the other columns, which is utf8mb4_0900_ai_ci 
+    We'll also adjust the data type of the RevenueSource column from VARCHAR(13) to VARCHAR(25). When we didn't specify a collation and the data type, the default collation was utf8mb4_general_ci and the data type was VARCHAR(13) derived from the length of the longest string in the column (Rental_Weekly) 
+    With this we match the collattion and data type of the RevenueSource column in the IntermediateFactTable with the collation and data type of the RevenueSource column in the RevenueFactTable. */
+    ALTER TABLE valsanv_ZAGIMORE_DS.IntermediateFactTable
+    MODIFY COLUMN RevenueSource VARCHAR(25) COLLATE utf8mb4_0900_ai_ci NOT NULL;
 
--- Now we'll populate the valsanv_ZAGIMORE_DS.RevenueFactTable with the new data from valsanv_ZAGIMORE_DS.IntermediateFactTable
--- Here we're using a modified version of the query we used for initial mapping of rows from intermediate fact table into the fact table
-INSERT INTO valsanv_ZAGIMORE_DS.RevenueFactTable(DollarAmount, RevenueSource, TID, CustomerKey, StoreKey, CalendarKey, ProductKey, ExtractionTimestamp, f_loaded) -- added two columns "ExtractionTimestamp" and "f_loaded"
-SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), FALSE -- set f_loaded to FALSE. We can use FALSE or 0 to indicate that the data is not yet loaded
-FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i, valsanv_ZAGIMORE_DS.CustomerDimension AS cd, valsanv_ZAGIMORE_DS.StoreDimension AS sd, valsanv_ZAGIMORE_DS.CalendarDimension AS cad, valsanv_ZAGIMORE_DS.ProductDimension AS pd
-WHERE cd.CustomerID = i.customerid
-AND sd.StoreID = i.storeid
-AND cad.FullDate = i.FullDate
-AND pd.ProductID = i.productid
-AND i.RevenueSource = "Sale" 
-AND pd.ProductType = "S" -- we have same product IDs under two different product types
-UNION
-SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), 0 -- set f_loaded to FALSE. We can use FALSE or 0 to indicate that the data is not yet loaded
-FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i, valsanv_ZAGIMORE_DS.CustomerDimension AS cd, valsanv_ZAGIMORE_DS.StoreDimension AS sd, valsanv_ZAGIMORE_DS.CalendarDimension AS cad, valsanv_ZAGIMORE_DS.ProductDimension AS pd
-WHERE cd.CustomerID = i.customerid
-AND sd.StoreID = i.storeid
-AND cad.FullDate = i.FullDate
-AND pd.ProductID = i.productid
-AND i.RevenueSource IN ("Rental_Weekly", "Rental_Daily") 
-AND pd.ProductType = "R"; -- we have same product IDs under two different product types
+    -- Now we'll populate the valsanv_ZAGIMORE_DS.RevenueFactTable with the new data from valsanv_ZAGIMORE_DS.IntermediateFactTable
+    -- Here we're using a modified version of the query we used for initial mapping of rows from intermediate fact table into the fact table
+    INSERT INTO valsanv_ZAGIMORE_DS.RevenueFactTable(DollarAmount, RevenueSource, TID, CustomerKey, StoreKey, CalendarKey, ProductKey, ExtractionTimestamp, f_loaded) -- added two columns "ExtractionTimestamp" and "f_loaded"
+    SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), FALSE -- set f_loaded to FALSE. We can use FALSE or 0 to indicate that the data is not yet loaded
+    FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i, valsanv_ZAGIMORE_DS.CustomerDimension AS cd, valsanv_ZAGIMORE_DS.StoreDimension AS sd, valsanv_ZAGIMORE_DS.CalendarDimension AS cad, valsanv_ZAGIMORE_DS.ProductDimension AS pd
+    WHERE cd.CustomerID = i.customerid
+    AND sd.StoreID = i.storeid
+    AND cad.FullDate = i.FullDate
+    AND pd.ProductID = i.productid
+    AND i.RevenueSource = "Sale" 
+    AND pd.ProductType = "S" -- we have same product IDs under two different product types
+    UNION
+    SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), 0 -- set f_loaded to FALSE. We can use FALSE or 0 to indicate that the data is not yet loaded
+    FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i, valsanv_ZAGIMORE_DS.CustomerDimension AS cd, valsanv_ZAGIMORE_DS.StoreDimension AS sd, valsanv_ZAGIMORE_DS.CalendarDimension AS cad, valsanv_ZAGIMORE_DS.ProductDimension AS pd
+    WHERE cd.CustomerID = i.customerid
+    AND sd.StoreID = i.storeid
+    AND cad.FullDate = i.FullDate
+    AND pd.ProductID = i.productid
+    AND i.RevenueSource IN ("Rental_Weekly", "Rental_Daily") 
+    AND pd.ProductType = "R"; -- we have same product IDs under two different product types
 
 
--- Load the new facts from valsanv_ZAGIMORE_DS.RevenueFactTable into valsanv_ZAGIMORE_DW.RevenueFactTable
-INSERT INTO valsanv_ZAGIMORE_DW.RevenueFactTable (DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey)
-SELECT DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey
-FROM valsanv_ZAGIMORE_DS.RevenueFactTable
-WHERE f_loaded = FALSE;
--- Update the f_loaded column in valsanv_ZAGIMORE_DS.RevenueFactTable to TRUE or 1 for the newly loaded facts to indicate that they have been loaded
-UPDATE valsanv_ZAGIMORE_DS.RevenueFactTable
-SET f_loaded = TRUE
-WHERE f_loaded = FALSE;
--- Now we can drop our valsanv_ZAGIMORE_DS.IntermediateFactTable. This is just a temporary table, which we won't keep in a production environment
-DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
+    -- Load the new facts from valsanv_ZAGIMORE_DS.RevenueFactTable into valsanv_ZAGIMORE_DW.RevenueFactTable
+    INSERT INTO valsanv_ZAGIMORE_DW.RevenueFactTable (DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey)
+    SELECT DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey
+    FROM valsanv_ZAGIMORE_DS.RevenueFactTable
+    WHERE f_loaded = FALSE;
+    -- Update the f_loaded column in valsanv_ZAGIMORE_DS.RevenueFactTable to TRUE or 1 for the newly loaded facts to indicate that they have been loaded
+    UPDATE valsanv_ZAGIMORE_DS.RevenueFactTable
+    SET f_loaded = TRUE
+    WHERE f_loaded = FALSE;
+    -- Now we can drop our valsanv_ZAGIMORE_DS.IntermediateFactTable. This is just a temporary table, which we won't keep in a production environment
+    DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
 END $$$
 DELIMITER ;
 
@@ -782,7 +782,10 @@ ADD CurrentStatus BOOLEAN;
 UPDATE valsanv_ZAGIMORE_DW.CustomerDimension
 SET DateValidFrom = '2013-01-01', DateValidUntil = '2035-01-01', CurrentStatus = TRUE;
 
+-- 3 Changes in the Customer Table
 UPDATE `customer` SET `customerzip` = '66666' WHERE `customer`.`customerid` = '2-3-444';
+UPDATE `customer` SET `customername` = 'Norah' WHERE `customer`.`customerid` = '5-6-777';
+UPDATE `customer` SET `customername` = 'Margaret', `customerzip` = '47411' WHERE `customer`.`customerid` = '8-9-000';
 
 -- Check: Updating existing rows in the Product Dimension whose name or zipcode (or both) has changed by setting their DateValidUntil to yesterday's date and CurrentStatus to FALSE
 SELECT cd.CustomerKey, cd.CustomerID, cd.CustomerName, cd.CustomerZip, cd.DateValidFrom, cd.DateValidUntil, cd.CurrentStatus
@@ -793,12 +796,6 @@ AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
 -- Updating existing rows in the Customer Dimension whose name or zipcode (or both) has changed by setting their DateValidUntil to yesterday's date and CurrentStatus to FALSE
 UPDATE valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
 SET cd.DateValidUntil = NOW() - INTERVAL 1 DAY, cd.CurrentStatus = FALSE, cd_loaded = FALSE
-WHERE c.customerid = cd.CustomerID
-AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
-
-
-SELECT cd.CustomerKey, cd.CustomerID, cd.CustomerName, cd.CustomerZip, cd.DateValidFrom, cd.DateValidUntil, cd.CurrentStatus
-FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
 WHERE c.customerid = cd.CustomerID
 AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
 
@@ -815,6 +812,154 @@ SELECT CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateVa
 FROM valsanv_ZAGIMORE_DS.CustomerDimension
 WHERE cd_loaded = FALSE;
 
--- Drop foreign key - perform insert, then add back the foreign key
-/* ALTER TABLE valsanv_ZAGIMORE_DW.CustomerDimension DROP FOREIGN KEY CustomerDimension_ibfk_1;
-REPLACE INTO valsanv_ZAGIMORE_DW.CustomerDimension (CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus) */
+-- N.B.:
+/* 
+The above code block will not work in our verson of MySQL, it responds with the following error:
+
+MySQL said:
+
+#1451 - Cannot delete or update a parent row: a foreign key constraint fails (`valsanv_ZAGIMORE_DW`.`OneWayProductCategoryAggregate`, CONSTRAINT `OneWayProductCategoryAggregate_ibfk_1` FOREIGN KEY (`CustomerKey`) REFERENCES `CustomerDimension` (`CustomerKey`)) 
+
+The error message above only mentions one foreign key constraint, but in fact we have 3 tables referencing CustomerKey from the
+CustomerDimension table. They are 1) RevenueFactTable, 2) OneWayProductCategoryAggregate and 3) OneWayRegionAggregate. Because of how 
+our version of MySQL works, we need to drop these foreign key references before we can make changes to the CustomerDimension table in DW.
+
+So, we'll do it this way:
+1) Drop the foreign key reference from the RevenueFactTable, OneWayProductCategoryAggregate and OneWayRegionAggregate tables
+2) Make the changes to the CustomerDimension table in DW by running the above "REPLACE INTO" code block
+3) Add back the foreign key references
+
+Note that this is why in many production environments, we don't actually enforce foreign key constraints even in DW. They exist 
+implicitly, but we don't enforce them. The ETL process in a production environment is that effiecient, so that there is no need to enforce them -- NOTHING CAN GO WRONG. But here, for pedagogical reasons, we enforce them.
+*/
+
+-- DO NOT RUN DAILY AND LATE FACT REFRESH WITHOUT ADJUSTING THE PROCEDURES FOR TYPE-2 CHANGES
+-- ADJUST ALL THE CODE FOR FOR THE DROPPED COLUMN ProductPriceMonthly - This was dropped in last class
+
+-- =========================================================================================================================
+-- Lecture 04/13/2026: Week 10 & 11 : ETL, Part 5 & 6
+-- In class exercise narrative ETL part 2: dealing with new facts and changing dimensions - Continued
+-- =========================================================================================================================
+
+-- Customer row count check
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.customer_row_count_check;
+
+DELIMITER $$$
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.customer_row_count_check()
+BEGIN
+    SELECT COUNT(*), "SourceCustomerCount" 
+    FROM valsanv_ZAGIMORE.customer
+    UNION
+    SELECT COUNT(*), "DS_CustomerCount" 
+    FROM valsanv_ZAGIMORE_DS.CustomerDimension
+    WHERE CurrentStatus = TRUE
+END$$$
+
+DELIMITER ;
+
+-- update the code for valsanv_ZAGIMORE_DS.customer_dimension_refresh() to account for the Type-2 changes
+
+-- 1) Drop the foreign key reference from the RevenueFactTable, OneWayProductCategoryAggregate and OneWayRegionAggregate tables
+ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
+DROP Foreign Key RevenueFactTable_ibfk_4; -- get the value from the "Constraint properties" under the "Relation view" tab of the corrensponding table in the DW
+
+ALTER TABLE valsanv_ZAGIMORE_DW.OneWayProductCategoryAggregate
+DROP Foreign Key OneWayProductCategoryAggregate_ibfk_1;
+
+ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
+DROP Foreign Key OneWayRegionAggregate_ibfk_1;
+
+-- 2) Make the changes to the CustomerDimension table in DW by running the above "REPLACE INTO" code block
+-- Loading the Customer Dimension in DW with all the changed rows and new rows from Customer Dimension in DS
+REPLACE INTO valsanv_ZAGIMORE_DW.CustomerDimension (CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus)
+SELECT CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus
+FROM valsanv_ZAGIMORE_DS.CustomerDimension
+WHERE cd_loaded = FALSE;
+
+-- 3) Add back the foreign key references
+ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
+ADD CONSTRAINT RevenueFactTable_ibfk_4
+FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
+
+ALTER TABLE valsanv_ZAGIMORE_DW.OneWayProductCategoryAggregate
+ADD CONSTRAINT OneWayProductCategoryAggregate_ibfk_1
+FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
+
+ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
+ADD CONSTRAINT OneWayRegionAggregate_ibfk_1
+FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
+
+-- 4) Update the cd_loaded column in the CustomerDimension table in DS
+UPDATE valsanv_ZAGIMORE_DS.CustomerDimension
+SET cd_loaded = TRUE
+WHERE cd_loaded = FALSE;
+
+-- Now we can wrap all the CustomerDimension type-2 changes into a single stored procedure
+-- procedure for Customer Dimension Type-2 changes refresh
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.customer_dimension_type2_refresh;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.customer_dimension_type2_refresh()
+BEGIN
+
+    -- Updating existing rows in the Customer Dimension whose name or zipcode (or both) has changed by setting their DateValidUntil to yesterday's date and CurrentStatus to FALSE
+    UPDATE valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
+    SET cd.DateValidUntil = DATE(NOW()) - INTERVAL 1 DAY, cd.CurrentStatus = FALSE, cd_loaded = FALSE
+    WHERE c.customerid = cd.CustomerID
+    AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
+
+    -- Inserting new rows in the Customer Dimension for those customers whose name, zipcode or both changed
+    INSERT INTO valsanv_ZAGIMORE_DS.CustomerDimension (CustomerID, CustomerName, CustomerZip, ExtractionTimestamp, cd_loaded, DateValidFrom, DateValidUntil, CurrentStatus)
+    SELECT c.customerid, c.customername, c.customerzip, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
+    FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
+    WHERE c.customerid = cd.CustomerID
+    AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
+
+    -- 1) Drop the foreign key reference from the RevenueFactTable, OneWayProductCategoryAggregate and OneWayRegionAggregate tables
+    ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
+    DROP Foreign Key RevenueFactTable_ibfk_4; -- get the value from the "Constraint properties" under the "Relation view" tab of the corrensponding table in the DW
+
+    ALTER TABLE valsanv_ZAGIMORE_DW.OneWayProductCategoryAggregate
+    DROP Foreign Key OneWayProductCategoryAggregate_ibfk_1;
+
+    ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
+    DROP Foreign Key OneWayRegionAggregate_ibfk_1;
+
+    -- 2) Make the changes to the CustomerDimension table in DW by running the above "REPLACE INTO" code block
+    -- Loading the Customer Dimension in DW with all the changed rows and new rows from Customer Dimension in DS
+    REPLACE INTO valsanv_ZAGIMORE_DW.CustomerDimension (CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus)
+    SELECT CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus
+    FROM valsanv_ZAGIMORE_DS.CustomerDimension
+    WHERE cd_loaded = FALSE;
+
+    -- 3) Add back the foreign key references
+    ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
+    ADD CONSTRAINT RevenueFactTable_ibfk_4
+    FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
+
+    ALTER TABLE valsanv_ZAGIMORE_DW.OneWayProductCategoryAggregate
+    ADD CONSTRAINT OneWayProductCategoryAggregate_ibfk_1
+    FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
+
+    ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
+    ADD CONSTRAINT OneWayRegionAggregate_ibfk_1
+    FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
+
+    -- 4) Update the cd_loaded column in the CustomerDimension table in DS
+    UPDATE valsanv_ZAGIMORE_DS.CustomerDimension
+    SET cd_loaded = TRUE
+    WHERE cd_loaded = FALSE;
+
+END$$$
+
+DELIMITER ;
+
+
+-- =========================================================================================================================
+-- Lecture 04/15/2026: Week 10 & 11 : ETL, Part 5 & 6
+-- In class exercise narrative ETL part 2: dealing with new facts and changing dimensions - Continued
+-- =========================================================================================================================
+
+-- Lecture on use of AI in ETL development or just coding in general.
+/* Professor Boris Jukic: "In the coming years, your job is going to be more about reviewing code written by AI instead of writing the code yourself. That means you have to be on top of your game. You must be able to read and understand what the AI is doing, and that means you have to be able to write the code yourself." */

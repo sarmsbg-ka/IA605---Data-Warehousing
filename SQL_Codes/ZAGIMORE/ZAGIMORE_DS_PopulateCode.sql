@@ -386,7 +386,7 @@ FROM valsanv_ZAGIMORE_DS.DailyStoreSnapshot;
 -- =========================================================================================================================
 
 -- 03/17/2026: renamed the Customer_Dimensions table to CustomerDimension in both ZAGIMORE_DS and ZAGIMORE_DW. This update is done in both the ZAGIMORE_DS_PopulateCode.sql and ZAGIMORE_DW_PopulateCode.sql as well
-RENAME TABLE valsanv_ZAGIMORE_DS.Customer_Dimensions TO valsanv_ZAGIMORE_DS.CustomerDimension;4
+RENAME TABLE valsanv_ZAGIMORE_DS.Customer_Dimensions TO valsanv_ZAGIMORE_DS.CustomerDimension;
 RENAME TABLE valsanv_ZAGIMORE_DW.Customer_Dimensions TO valsanv_ZAGIMORE_DW.CustomerDimension;
 
 -- One way aggregation by Product Category
