@@ -10,7 +10,7 @@ CREATE TABLE ProductDimension
   ProductType CHAR(1) NOT NULL,
   ProductSalePrice NUMERIC(7,2),
   ProductPriceDaily NUMERIC(7,2),
-  ProductPriceWeekly NUMERIC(7.2),
+  ProductPriceWeekly NUMERIC(7,2),
   PRIMARY KEY (ProductKey)
 );
 CREATE TABLE StoreDimension

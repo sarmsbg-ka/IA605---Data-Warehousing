@@ -124,22 +124,22 @@ AND p.vendorid=v.vendorid
 
 --Now we can insert this data into the ProductDimension table in the ZAGIMORE_DS database
 -- Here we will use the JOIN syntax instead of the WHERE clause to practice different ways of writing JOINs in SQL
-INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, ProductPriceMonthly)
-SELECT p.productid, p.productname, p.vendorid, p.categoryid, v.vendorname, c.categoryname, "S", p.productprice, NULL, NULL, NULL
+INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly)
+SELECT p.productid, p.productname, p.vendorid, p.categoryid, v.vendorname, c.categoryname, "S", p.productprice, NULL, NULL
 FROM valsanv_ZAGIMORE.product p
 JOIN valsanv_ZAGIMORE.vendor v ON p.vendorid = v.vendorid
 JOIN valsanv_ZAGIMORE.category c ON p.categoryid = c.categoryid;
 
 -- Now for the rental product type
 -- 02 - Extracting data for products with product type "Rental"
-SELECT r.productid, r.productname, r.vendorid, r.categoryid, v.vendorname, c.categoryname, "R", NULL, r.productpricedaily, r.productpriceweekly, NULL -- "R" for "Rental" since we don't have a product type column in the rental product table, but we can assume all rental products are for rent. NULL values for the ProductSalePrice and ProductPriceMonthly columns since we don't have that data in the rental product table, but we can populate those columns later if needed.
+SELECT r.productid, r.productname, r.vendorid, r.categoryid, v.vendorname, c.categoryname, "R", NULL, r.productpricedaily, r.productpriceweekly -- "R" for "Rental" since we don't have a product type column in the rental product table, but we can assume all rental products are for rent. NULL value for ProductSalePrice since rental products don't have a sale price.
 FROM valsanv_ZAGIMORE.rentalProducts r
 JOIN valsanv_ZAGIMORE.vendor v ON r.vendorid = v.vendorid
 JOIN valsanv_ZAGIMORE.category c ON r.categoryid = c.categoryid;
 
 -- Now we can insert this data into the ProductDimension table in the ZAGIMORE_DS database
-INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, ProductPriceMonthly)
-SELECT r.productid, r.productname, r.vendorid, r.categoryid, v.vendorname, c.categoryname, "R", NULL, r.productpricedaily, r.productpriceweekly, NULL
+INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly)
+SELECT r.productid, r.productname, r.vendorid, r.categoryid, v.vendorname, c.categoryname, "R", NULL, r.productpricedaily, r.productpriceweekly
 FROM valsanv_ZAGIMORE.rentalProducts r
 JOIN valsanv_ZAGIMORE.vendor v ON r.vendorid = v.vendorid
 JOIN valsanv_ZAGIMORE.category c ON r.categoryid = c.categoryid;

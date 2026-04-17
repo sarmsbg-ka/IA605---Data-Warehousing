@@ -140,6 +140,7 @@ DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
 -- =========================================================================================================================
 
 -- Create a procedure for daily fact refresh
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.daily_fact_refresh;
 DELIMITER $$$
 CREATE PROCEDURE valsanv_ZAGIMORE_DS.daily_fact_refresh()
 BEGIN
@@ -246,6 +247,7 @@ INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALU
 INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("2X2", "N006", "W", 5);
 
 -- Creating procedure late_arriving_fact_refresh()
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.late_arriving_fact_refresh;
 DELIMITER $$$
 CREATE PROCEDURE valsanv_ZAGIMORE_DS.late_arriving_fact_refresh()
 BEGIN
@@ -834,7 +836,6 @@ implicitly, but we don't enforce them. The ETL process in a production environme
 */
 
 -- DO NOT RUN DAILY AND LATE FACT REFRESH WITHOUT ADJUSTING THE PROCEDURES FOR TYPE-2 CHANGES
--- ADJUST ALL THE CODE FOR FOR THE DROPPED COLUMN ProductPriceMonthly - This was dropped in last class
 
 -- =========================================================================================================================
 -- Lecture 04/13/2026: Week 10 & 11 : ETL, Part 5 & 6
@@ -963,3 +964,503 @@ DELIMITER ;
 
 -- Lecture on use of AI in ETL development or just coding in general.
 /* Professor Boris Jukic: "In the coming years, your job is going to be more about reviewing code written by AI instead of writing the code yourself. That means you have to be on top of your game. You must be able to read and understand what the AI is doing, and that means you have to be able to write the code yourself." */
+
+-- =========================================================================================================================
+-- Self: 04-17-2026
+-- =========================================================================================================================
+
+-- Appending new dimension values to the Store Dimension table in the next ETL cycle.
+-- Following the same pattern used for ProductDimension and CustomerDimension.
+
+-- Add control columns "ExtractionTimestamp" and "sd_loaded" to the DS StoreDimension
+ALTER TABLE valsanv_ZAGIMORE_DS.StoreDimension
+ADD COLUMN ExtractionTimestamp TIMESTAMP,
+ADD COLUMN sd_loaded BOOLEAN;
+
+-- Mark all existing rows as already loaded into the DW
+UPDATE valsanv_ZAGIMORE_DS.StoreDimension
+SET sd_loaded = TRUE;
+
+-- Set ExtractionTimestamp for existing rows to simulate a past load
+UPDATE valsanv_ZAGIMORE_DS.StoreDimension
+SET ExtractionTimestamp = NOW() - INTERVAL (14) DAY;
+
+-- Create two new stores in the operational DB to test the refresh
+INSERT INTO valsanv_ZAGIMORE.store (storeid, storezip, regionid)
+VALUES ("S15", "13210", "N");
+
+INSERT INTO valsanv_ZAGIMORE.store (storeid, storezip, regionid)
+VALUES ("S16", "10001", "C");
+
+-- Store Dimension refresh code: extract new stores from operational DB and load into DS
+-- We join with the region table to denormalize RegionID and RegionName into StoreDimension
+INSERT INTO valsanv_ZAGIMORE_DS.StoreDimension (StoreID, StoreZip, RegionID, RegionName, ExtractionTimestamp, sd_loaded)
+SELECT s.storeid, s.storezip, r.regionid, r.regionname, NOW(), FALSE
+FROM valsanv_ZAGIMORE.store s
+JOIN valsanv_ZAGIMORE.region r ON s.regionid = r.regionid
+WHERE s.storeid NOT IN (SELECT DISTINCT StoreID FROM valsanv_ZAGIMORE_DS.StoreDimension);
+
+-- Load new stores (sd_loaded = FALSE) from DS into the DW StoreDimension
+INSERT INTO valsanv_ZAGIMORE_DW.StoreDimension (StoreKey, StoreID, StoreZip, RegionID, RegionName)
+SELECT StoreKey, StoreID, StoreZip, RegionID, RegionName
+FROM valsanv_ZAGIMORE_DS.StoreDimension
+WHERE sd_loaded = FALSE;
+
+-- Mark the newly loaded rows as loaded
+UPDATE valsanv_ZAGIMORE_DS.StoreDimension
+SET sd_loaded = TRUE
+WHERE sd_loaded = FALSE;
+
+-- Creating a procedure for Store Dimension refresh
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.store_dimension_refresh;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.store_dimension_refresh()
+BEGIN
+    -- Insert new stores from the operational DB that are not yet in the DS StoreDimension
+    INSERT INTO valsanv_ZAGIMORE_DS.StoreDimension (StoreID, StoreZip, RegionID, RegionName, ExtractionTimestamp, sd_loaded)
+    SELECT s.storeid, s.storezip, r.regionid, r.regionname, NOW(), FALSE
+    FROM valsanv_ZAGIMORE.store s
+    JOIN valsanv_ZAGIMORE.region r ON s.regionid = r.regionid
+    WHERE s.storeid NOT IN (SELECT DISTINCT StoreID FROM valsanv_ZAGIMORE_DS.StoreDimension);
+
+    -- Load new stores (sd_loaded = FALSE) from DS into the DW StoreDimension
+    INSERT INTO valsanv_ZAGIMORE_DW.StoreDimension (StoreKey, StoreID, StoreZip, RegionID, RegionName)
+    SELECT StoreKey, StoreID, StoreZip, RegionID, RegionName
+    FROM valsanv_ZAGIMORE_DS.StoreDimension
+    WHERE sd_loaded = FALSE;
+
+    -- Mark the newly loaded rows as loaded
+    UPDATE valsanv_ZAGIMORE_DS.StoreDimension
+    SET sd_loaded = TRUE
+    WHERE sd_loaded = FALSE;
+END$$$
+
+DELIMITER ;
+
+-- Create two more new stores in the operational DB to test the procedure
+INSERT INTO valsanv_ZAGIMORE.store (storeid, storezip, regionid)
+VALUES ("S17", "90210", "I");
+
+INSERT INTO valsanv_ZAGIMORE.store (storeid, storezip, regionid)
+VALUES ("S18", "60601", "C");
+
+-- Calling the procedure
+CALL valsanv_ZAGIMORE_DS.store_dimension_refresh();
+
+-- Sanity check for store_dimension_refresh
+-- Validates that row counts are consistent across the operational DB, DS, and DW for StoreDimension.
+-- =========================================================================================================================
+
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.sp_validate_store_dimension;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.sp_validate_store_dimension()
+BEGIN
+    DECLARE src_count INT DEFAULT 0;
+    DECLARE ds_count INT DEFAULT 0;
+    DECLARE dw_count INT DEFAULT 0;
+
+    SELECT COUNT(*) INTO src_count
+    FROM valsanv_ZAGIMORE.store;
+
+    SELECT COUNT(*) INTO ds_count
+    FROM valsanv_ZAGIMORE_DS.StoreDimension;
+
+    SELECT COUNT(*) INTO dw_count
+    FROM valsanv_ZAGIMORE_DW.StoreDimension;
+
+    SELECT
+        src_count               AS src_rows,
+        ds_count                AS ds_rows,
+        dw_count                AS dw_rows,
+        (src_count - ds_count)  AS source_minus_ds,
+        (ds_count - dw_count)   AS ds_minus_dw,
+        CASE
+            WHEN src_count = ds_count AND ds_count = dw_count THEN 'PASS'
+            ELSE 'FAIL'
+        END AS validation_status;
+END$$$
+
+DELIMITER ;
+
+-- Calling the procedure
+CALL valsanv_ZAGIMORE_DS.sp_validate_store_dimension();
+
+-- =========================================================================================================================
+-- Drop ProductPriceMonthly from DS ProductDimension for consistency with DW (which no longer has this column)
+ALTER TABLE valsanv_ZAGIMORE_DS.ProductDimension
+DROP COLUMN ProductPriceMonthly;
+
+-- =========================================================================================================================
+-- Handling Type-2 Changes for Product Dimension
+-- =========================================================================================================================
+
+-- Adding 3 Type-2 change tracking columns to the Product Dimension in DS and setting their initial values
+ALTER TABLE valsanv_ZAGIMORE_DS.ProductDimension
+ADD DateValidFrom DATE,
+ADD DateValidUntil DATE,
+ADD CurrentStatus BOOLEAN;
+
+UPDATE valsanv_ZAGIMORE_DS.ProductDimension
+SET DateValidFrom = '2013-01-01', DateValidUntil = '2035-01-01', CurrentStatus = TRUE;
+
+-- Adding 3 Type-2 change tracking columns to the Product Dimension in DW and setting their initial values
+ALTER TABLE valsanv_ZAGIMORE_DW.ProductDimension
+ADD DateValidFrom DATE,
+ADD DateValidUntil DATE,
+ADD CurrentStatus BOOLEAN;
+
+UPDATE valsanv_ZAGIMORE_DW.ProductDimension
+SET DateValidFrom = '2013-01-01', DateValidUntil = '2035-01-01', CurrentStatus = TRUE;
+
+-- Simulate changes: update a sale product and a rental product in the operational DB
+UPDATE valsanv_ZAGIMORE.product
+SET productname = 'Test Product Updated', productprice = 300.00
+WHERE productid = '1Y1';
+
+UPDATE valsanv_ZAGIMORE.rentalProducts
+SET productname = 'Test Rental Updated', productpricedaily = 30.00, productpriceweekly = 120.00
+WHERE productid = '1Z1';
+
+-- Check: spot the products whose tracked attributes have changed vs the current DS version
+SELECT pd.ProductKey, pd.ProductID, pd.ProductType, pd.ProductName, pd.ProductSalePrice, pd.DateValidFrom, pd.DateValidUntil, pd.CurrentStatus
+FROM valsanv_ZAGIMORE.product p
+JOIN valsanv_ZAGIMORE.vendor v ON p.vendorid = v.vendorid
+JOIN valsanv_ZAGIMORE_DS.ProductDimension pd ON p.productid = pd.ProductID AND pd.ProductType = "S" AND pd.CurrentStatus = TRUE
+WHERE (p.productname != pd.ProductName OR p.productprice != pd.ProductSalePrice OR p.vendorid != pd.VendorID OR v.vendorname != pd.VendorName)
+UNION
+SELECT pd.ProductKey, pd.ProductID, pd.ProductType, pd.ProductName, pd.ProductPriceDaily, pd.DateValidFrom, pd.DateValidUntil, pd.CurrentStatus
+FROM valsanv_ZAGIMORE.rentalProducts r
+JOIN valsanv_ZAGIMORE.vendor v ON r.vendorid = v.vendorid
+JOIN valsanv_ZAGIMORE_DS.ProductDimension pd ON r.productid = pd.ProductID AND pd.ProductType = "R" AND pd.CurrentStatus = TRUE
+WHERE (r.productname != pd.ProductName OR r.productpricedaily != pd.ProductPriceDaily OR r.productpriceweekly != pd.ProductPriceWeekly OR r.vendorid != pd.VendorID OR v.vendorname != pd.VendorName);
+
+-- Expire the old rows in DS ProductDimension for changed sale products
+UPDATE valsanv_ZAGIMORE.product p
+JOIN valsanv_ZAGIMORE.vendor v ON p.vendorid = v.vendorid
+JOIN valsanv_ZAGIMORE_DS.ProductDimension pd ON p.productid = pd.ProductID AND pd.ProductType = "S" AND pd.CurrentStatus = TRUE
+SET pd.DateValidUntil = DATE(NOW()) - INTERVAL 1 DAY, pd.CurrentStatus = FALSE, pd.pd_loaded = FALSE
+WHERE (p.productname != pd.ProductName OR p.productprice != pd.ProductSalePrice OR p.vendorid != pd.VendorID OR v.vendorname != pd.VendorName);
+
+-- Expire the old rows in DS ProductDimension for changed rental products
+UPDATE valsanv_ZAGIMORE.rentalProducts r
+JOIN valsanv_ZAGIMORE.vendor v ON r.vendorid = v.vendorid
+JOIN valsanv_ZAGIMORE_DS.ProductDimension pd ON r.productid = pd.ProductID AND pd.ProductType = "R" AND pd.CurrentStatus = TRUE
+SET pd.DateValidUntil = DATE(NOW()) - INTERVAL 1 DAY, pd.CurrentStatus = FALSE, pd.pd_loaded = FALSE
+WHERE (r.productname != pd.ProductName OR r.productpricedaily != pd.ProductPriceDaily OR r.productpriceweekly != pd.ProductPriceWeekly OR r.vendorid != pd.VendorID OR v.vendorname != pd.VendorName);
+
+-- Insert new (current) versions of changed products into DS ProductDimension
+INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, ExtractionTimestamp, pd_loaded, DateValidFrom, DateValidUntil, CurrentStatus)
+SELECT p.productid, p.productname, p.vendorid, p.categoryid, v.vendorname, c.categoryname, "S", p.productprice, NULL, NULL, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
+FROM valsanv_ZAGIMORE.product p
+JOIN valsanv_ZAGIMORE.vendor v ON p.vendorid = v.vendorid
+JOIN valsanv_ZAGIMORE.category c ON p.categoryid = c.categoryid
+JOIN valsanv_ZAGIMORE_DS.ProductDimension pd ON p.productid = pd.ProductID AND pd.ProductType = "S" AND pd.CurrentStatus = FALSE AND pd.DateValidUntil = DATE(NOW()) - INTERVAL 1 DAY
+UNION
+SELECT r.productid, r.productname, r.vendorid, r.categoryid, v.vendorname, c.categoryname, "R", NULL, r.productpricedaily, r.productpriceweekly, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
+FROM valsanv_ZAGIMORE.rentalProducts r
+JOIN valsanv_ZAGIMORE.vendor v ON r.vendorid = v.vendorid
+JOIN valsanv_ZAGIMORE.category c ON r.categoryid = c.categoryid
+JOIN valsanv_ZAGIMORE_DS.ProductDimension pd ON r.productid = pd.ProductID AND pd.ProductType = "R" AND pd.CurrentStatus = FALSE AND pd.DateValidUntil = DATE(NOW()) - INTERVAL 1 DAY;
+
+-- Sync the DW ProductDimension with all changed rows (expired + new) from DS
+-- Note: We need to drop the FK reference from the RevenueFactTable and OneWayRegionAggregate before running REPLACE INTO,
+-- because MySQL won't allow updating a referenced PK row while the FK constraint is enforced.
+-- 1) Drop the FK reference from the RevenueFactTable
+ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
+DROP FOREIGN KEY RevenueFactTable_ibfk_1; -- get the value from the "Constraint properties" under the "Relation view" tab of RevenueFactTable in the DW
+
+ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
+DROP FOREIGN KEY OneWayRegionAggregate_ibfk_4;
+
+-- 2) Sync all changed and new rows from DS to DW using REPLACE INTO
+REPLACE INTO valsanv_ZAGIMORE_DW.ProductDimension (ProductKey, ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, DateValidFrom, DateValidUntil, CurrentStatus)
+SELECT ProductKey, ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, DateValidFrom, DateValidUntil, CurrentStatus
+FROM valsanv_ZAGIMORE_DS.ProductDimension
+WHERE pd_loaded = FALSE;
+
+-- 3) Add back the FK reference
+ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
+ADD CONSTRAINT RevenueFactTable_ibfk_1 -- get the value from the "Constraint properties" under the "Relation view" tab of the corresponding table in the DW
+FOREIGN KEY (ProductKey) REFERENCES valsanv_ZAGIMORE_DW.ProductDimension(ProductKey);
+
+ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
+ADD CONSTRAINT OneWayRegionAggregate_ibfk_4
+FOREIGN KEY (ProductKey) REFERENCES valsanv_ZAGIMORE_DW.ProductDimension(ProductKey);
+
+-- 4) Mark the synced rows as loaded in DS
+UPDATE valsanv_ZAGIMORE_DS.ProductDimension
+SET pd_loaded = TRUE
+WHERE pd_loaded = FALSE;
+
+-- Now wrap the Type-2 product dimension changes into a stored procedure
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.product_dimension_type2_refresh;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.product_dimension_type2_refresh()
+BEGIN
+    -- Step 1: Insert new (current) versions for changed sale and rental products
+    -- Detect changes by comparing source to the current DS row (CurrentStatus = TRUE)
+    INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, ExtractionTimestamp, pd_loaded, DateValidFrom, DateValidUntil, CurrentStatus)
+    SELECT p.productid, p.productname, p.vendorid, p.categoryid, v.vendorname, c.categoryname, "S", p.productprice, NULL, NULL, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
+    FROM valsanv_ZAGIMORE.product p
+    JOIN valsanv_ZAGIMORE.vendor v ON p.vendorid = v.vendorid
+    JOIN valsanv_ZAGIMORE.category c ON p.categoryid = c.categoryid
+    JOIN valsanv_ZAGIMORE_DS.ProductDimension pd ON p.productid = pd.ProductID AND pd.ProductType = "S" AND pd.CurrentStatus = TRUE
+    WHERE (p.productname != pd.ProductName OR p.productprice != pd.ProductSalePrice OR p.vendorid != pd.VendorID OR v.vendorname != pd.VendorName)
+    UNION
+    SELECT r.productid, r.productname, r.vendorid, r.categoryid, v.vendorname, c.categoryname, "R", NULL, r.productpricedaily, r.productpriceweekly, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
+    FROM valsanv_ZAGIMORE.rentalProducts r
+    JOIN valsanv_ZAGIMORE.vendor v ON r.vendorid = v.vendorid
+    JOIN valsanv_ZAGIMORE.category c ON r.categoryid = c.categoryid
+    JOIN valsanv_ZAGIMORE_DS.ProductDimension pd ON r.productid = pd.ProductID AND pd.ProductType = "R" AND pd.CurrentStatus = TRUE
+    WHERE (r.productname != pd.ProductName OR r.productpricedaily != pd.ProductPriceDaily OR r.productpriceweekly != pd.ProductPriceWeekly OR r.vendorid != pd.VendorID OR v.vendorname != pd.VendorName);
+
+    -- Step 2: Expire old rows using a self-join on ProductDimension
+    -- A row is old if another row exists for the same ProductID + ProductType with a later DateValidFrom
+    UPDATE valsanv_ZAGIMORE_DS.ProductDimension pd1
+    JOIN valsanv_ZAGIMORE_DS.ProductDimension pd2
+        ON pd1.ProductID = pd2.ProductID AND pd1.ProductType = pd2.ProductType AND pd1.DateValidFrom < pd2.DateValidFrom
+    SET pd1.DateValidUntil = DATE(NOW()) - INTERVAL 1 DAY, pd1.CurrentStatus = FALSE, pd1.pd_loaded = FALSE
+    WHERE pd1.CurrentStatus = TRUE;
+
+    -- 1) Drop FK references to ProductDimension from RevenueFactTable and OneWayRegionAggregate
+    ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
+    DROP FOREIGN KEY RevenueFactTable_ibfk_1; -- get the value from the "Constraint properties" under the "Relation view" tab of the corresponding table in the DW
+
+    ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
+    DROP FOREIGN KEY OneWayRegionAggregate_ibfk_4;
+
+    -- 2) Sync all changed and new rows from DS to DW
+    REPLACE INTO valsanv_ZAGIMORE_DW.ProductDimension (ProductKey, ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, DateValidFrom, DateValidUntil, CurrentStatus)
+    SELECT ProductKey, ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, DateValidFrom, DateValidUntil, CurrentStatus
+    FROM valsanv_ZAGIMORE_DS.ProductDimension
+    WHERE pd_loaded = FALSE;
+
+    -- 3) Add back the FK reference
+    ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
+    ADD CONSTRAINT RevenueFactTable_ibfk_1
+    FOREIGN KEY (ProductKey) REFERENCES valsanv_ZAGIMORE_DW.ProductDimension(ProductKey);
+
+    ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
+    ADD CONSTRAINT OneWayRegionAggregate_ibfk_4
+    FOREIGN KEY (ProductKey) REFERENCES valsanv_ZAGIMORE_DW.ProductDimension(ProductKey);
+
+    -- 4) Mark the synced rows as loaded in DS
+    UPDATE valsanv_ZAGIMORE_DS.ProductDimension
+    SET pd_loaded = TRUE
+    WHERE pd_loaded = FALSE;
+
+END$$$
+
+DELIMITER ;
+
+-- Simulate more product changes to test the procedure
+UPDATE valsanv_ZAGIMORE.product
+SET productname = 'Test Product 02 Updated', productprice = 320.00
+WHERE productid = '1Y2';
+
+UPDATE valsanv_ZAGIMORE.rentalProducts
+SET productpricedaily = 35.00
+WHERE productid = '1Z2';
+
+-- Calling the procedure
+CALL valsanv_ZAGIMORE_DS.product_dimension_type2_refresh();
+
+-- =========================================================================================================================
+-- Updated versions of product_dimension_refresh() and customer_dimension_refresh()
+-- Now that Type-2 columns (DateValidFrom, DateValidUntil, CurrentStatus) exist in both DS and DW,
+-- new records inserted by these procedures must also have those columns populated.
+-- =========================================================================================================================
+
+-- Updated product_dimension_refresh: sets Type-2 columns for brand new products on first insert
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.product_dimension_refresh;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.product_dimension_refresh()
+BEGIN
+    -- Insert new sale and rental products from the operational DB that are not yet in DS ProductDimension
+    -- Type-2 columns are set here so new products are consistent with existing rows
+    INSERT INTO valsanv_ZAGIMORE_DS.ProductDimension (ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, ExtractionTimestamp, pd_loaded, DateValidFrom, DateValidUntil, CurrentStatus)
+    SELECT p.productid, p.productname, p.vendorid, p.categoryid, v.vendorname, c.categoryname, "S", p.productprice, NULL, NULL, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
+    FROM valsanv_ZAGIMORE.product p
+    JOIN valsanv_ZAGIMORE.vendor v ON p.vendorid = v.vendorid
+    JOIN valsanv_ZAGIMORE.category c ON p.categoryid = c.categoryid
+    WHERE p.productid NOT IN (SELECT DISTINCT ProductID FROM valsanv_ZAGIMORE_DS.ProductDimension WHERE ProductType = "S")
+    UNION
+    SELECT r.productid, r.productname, r.vendorid, r.categoryid, v.vendorname, c.categoryname, "R", NULL, r.productpricedaily, r.productpriceweekly, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
+    FROM valsanv_ZAGIMORE.rentalProducts r
+    JOIN valsanv_ZAGIMORE.vendor v ON r.vendorid = v.vendorid
+    JOIN valsanv_ZAGIMORE.category c ON r.categoryid = c.categoryid
+    WHERE r.productid NOT IN (SELECT DISTINCT ProductID FROM valsanv_ZAGIMORE_DS.ProductDimension WHERE ProductType = "R");
+
+    -- Load new products (pd_loaded = FALSE) from DS into the DW ProductDimension
+    INSERT INTO valsanv_ZAGIMORE_DW.ProductDimension (ProductKey, ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, DateValidFrom, DateValidUntil, CurrentStatus)
+    SELECT ProductKey, ProductID, ProductName, VendorID, CategoryID, VendorName, CategoryName, ProductType, ProductSalePrice, ProductPriceDaily, ProductPriceWeekly, DateValidFrom, DateValidUntil, CurrentStatus
+    FROM valsanv_ZAGIMORE_DS.ProductDimension
+    WHERE pd_loaded = FALSE;
+
+    -- Mark the newly loaded rows as loaded
+    UPDATE valsanv_ZAGIMORE_DS.ProductDimension
+    SET pd_loaded = TRUE
+    WHERE pd_loaded = FALSE;
+END$$$
+
+DELIMITER ;
+
+-- Updated customer_dimension_refresh: sets Type-2 columns for brand new customers on first insert
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.customer_dimension_refresh;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.customer_dimension_refresh()
+BEGIN
+    -- Insert new customers from the operational DB that are not yet in DS CustomerDimension
+    -- Type-2 columns are set here so new customers are consistent with existing rows
+    INSERT INTO valsanv_ZAGIMORE_DS.CustomerDimension (CustomerID, CustomerName, CustomerZip, ExtractionTimestamp, cd_loaded, DateValidFrom, DateValidUntil, CurrentStatus)
+    SELECT c.customerid, c.customername, c.customerzip, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
+    FROM valsanv_ZAGIMORE.customer c
+    WHERE c.customerid NOT IN (SELECT DISTINCT CustomerID FROM valsanv_ZAGIMORE_DS.CustomerDimension);
+
+    -- Load new customers (cd_loaded = FALSE) from DS into the DW CustomerDimension
+    INSERT INTO valsanv_ZAGIMORE_DW.CustomerDimension (CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus)
+    SELECT CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus
+    FROM valsanv_ZAGIMORE_DS.CustomerDimension
+    WHERE cd_loaded = FALSE;
+
+    -- Mark the newly loaded rows as loaded
+    UPDATE valsanv_ZAGIMORE_DS.CustomerDimension
+    SET cd_loaded = TRUE
+    WHERE cd_loaded = FALSE;
+END$$$
+
+DELIMITER ;
+
+-- =========================================================================================================================
+-- Updated validation procedures to account for Type-2 change tracking
+-- Now that ProductDimension and CustomerDimension have historical (expired) rows, counts must be
+-- filtered to CurrentStatus = TRUE to correctly compare against the source operational DB.
+-- =========================================================================================================================
+
+-- Updated sp_validate_product_dimension: filters DS and DW counts to current rows only
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.sp_validate_product_dimension;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.sp_validate_product_dimension()
+BEGIN
+    DECLARE sale_src_count INT DEFAULT 0;
+    DECLARE rental_src_count INT DEFAULT 0;
+    DECLARE src_total INT DEFAULT 0;
+    DECLARE ds_sale_count INT DEFAULT 0;
+    DECLARE ds_rental_count INT DEFAULT 0;
+    DECLARE ds_total INT DEFAULT 0;
+    DECLARE dw_sale_count INT DEFAULT 0;
+    DECLARE dw_rental_count INT DEFAULT 0;
+    DECLARE dw_total INT DEFAULT 0;
+
+    -- Count sale and rental products in the operational DB
+    SELECT COUNT(*) INTO sale_src_count
+    FROM valsanv_ZAGIMORE.product;
+
+    SELECT COUNT(*) INTO rental_src_count
+    FROM valsanv_ZAGIMORE.rentalProducts;
+
+    SET src_total = sale_src_count + rental_src_count;
+
+    -- Count current (non-expired) sale and rental products in the DS ProductDimension
+    SELECT COUNT(*) INTO ds_sale_count
+    FROM valsanv_ZAGIMORE_DS.ProductDimension
+    WHERE ProductType = 'S' AND CurrentStatus = TRUE;
+
+    SELECT COUNT(*) INTO ds_rental_count
+    FROM valsanv_ZAGIMORE_DS.ProductDimension
+    WHERE ProductType = 'R' AND CurrentStatus = TRUE;
+
+    SET ds_total = ds_sale_count + ds_rental_count;
+
+    -- Count current (non-expired) sale and rental products in the DW ProductDimension
+    SELECT COUNT(*) INTO dw_sale_count
+    FROM valsanv_ZAGIMORE_DW.ProductDimension
+    WHERE ProductType = 'S' AND CurrentStatus = TRUE;
+
+    SELECT COUNT(*) INTO dw_rental_count
+    FROM valsanv_ZAGIMORE_DW.ProductDimension
+    WHERE ProductType = 'R' AND CurrentStatus = TRUE;
+
+    SET dw_total = dw_sale_count + dw_rental_count;
+
+    SELECT
+        sale_src_count      AS src_sale_rows,
+        rental_src_count    AS src_rental_rows,
+        src_total           AS src_total,
+        ds_sale_count       AS ds_sale_rows,
+        ds_rental_count     AS ds_rental_rows,
+        ds_total            AS ds_total,
+        dw_sale_count       AS dw_sale_rows,
+        dw_rental_count     AS dw_rental_rows,
+        dw_total            AS dw_total,
+        (src_total - ds_total)  AS source_minus_ds,
+        (ds_total - dw_total)   AS ds_minus_dw,
+        CASE
+            WHEN src_total = ds_total AND ds_total = dw_total THEN 'PASS'
+            ELSE 'FAIL'
+        END AS validation_status;
+END$$$
+
+DELIMITER ;
+
+-- Updated sp_validate_customer_dimension: filters DS and DW counts to current rows only
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.sp_validate_customer_dimension;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.sp_validate_customer_dimension()
+BEGIN
+    DECLARE src_count INT DEFAULT 0;
+    DECLARE ds_count INT DEFAULT 0;
+    DECLARE dw_count INT DEFAULT 0;
+
+    SELECT COUNT(*) INTO src_count
+    FROM valsanv_ZAGIMORE.customer;
+
+    -- Count only current (non-expired) rows in DS CustomerDimension
+    SELECT COUNT(*) INTO ds_count
+    FROM valsanv_ZAGIMORE_DS.CustomerDimension
+    WHERE CurrentStatus = TRUE;
+
+    -- Count only current (non-expired) rows in DW CustomerDimension
+    SELECT COUNT(*) INTO dw_count
+    FROM valsanv_ZAGIMORE_DW.CustomerDimension
+    WHERE CurrentStatus = TRUE;
+
+    SELECT
+        src_count               AS src_rows,
+        ds_count                AS ds_rows,
+        dw_count                AS dw_rows,
+        (src_count - ds_count)  AS source_minus_ds,
+        (ds_count - dw_count)   AS ds_minus_dw,
+        CASE
+            WHEN src_count = ds_count AND ds_count = dw_count THEN 'PASS'
+            ELSE 'FAIL'
+        END AS validation_status;
+END$$$
+
+DELIMITER ;
+
+-- Calling the updated procedures to verify
+CALL valsanv_ZAGIMORE_DS.sp_validate_product_dimension();
+CALL valsanv_ZAGIMORE_DS.sp_validate_customer_dimension();
+
+-- =========================================================================================================================
+-- Note: Type-2 change tracking is intentionally not implemented for StoreDimension.
+/* 
+    Stores are stable operational entities — changes to attributes like StoreZip or RegionID are rare
+    and do not carry analytical significance that would require preserving historical versions.
+*/
+-- =========================================================================================================================

@@ -11,7 +11,6 @@ CREATE TABLE IF NOT EXISTS ProductDimension
   ProductSalePrice NUMERIC(7,2),
   ProductPriceDaily NUMERIC(7,2),
   ProductPriceWeekly NUMERIC(7,2),
-  ProductPriceMonthly NUMERIC(7,2),
   PRIMARY KEY (ProductKey)
 );
 
