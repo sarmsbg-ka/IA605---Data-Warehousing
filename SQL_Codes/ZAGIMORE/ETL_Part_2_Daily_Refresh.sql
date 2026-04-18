@@ -789,24 +789,34 @@ UPDATE `customer` SET `customerzip` = '66666' WHERE `customer`.`customerid` = '2
 UPDATE `customer` SET `customername` = 'Norah' WHERE `customer`.`customerid` = '5-6-777';
 UPDATE `customer` SET `customername` = 'Margaret', `customerzip` = '47411' WHERE `customer`.`customerid` = '8-9-000';
 
--- Check: Updating existing rows in the Product Dimension whose name or zipcode (or both) has changed by setting their DateValidUntil to yesterday's date and CurrentStatus to FALSE
+-- STEP 1: Insert new active row for changed customers (compare against CurrentStatus = TRUE only)
+-- Pre-check: preview which customers will get a new row before running the INSERT
 SELECT cd.CustomerKey, cd.CustomerID, cd.CustomerName, cd.CustomerZip, cd.DateValidFrom, cd.DateValidUntil, cd.CurrentStatus
 FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
 WHERE c.customerid = cd.CustomerID
+AND cd.CurrentStatus = TRUE
 AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
 
--- Updating existing rows in the Customer Dimension whose name or zipcode (or both) has changed by setting their DateValidUntil to yesterday's date and CurrentStatus to FALSE
-UPDATE valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
-SET cd.DateValidUntil = NOW() - INTERVAL 1 DAY, cd.CurrentStatus = FALSE, cd_loaded = FALSE
-WHERE c.customerid = cd.CustomerID
-AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
-
--- Inserting new rows in the Customer Dimension for those customers whose name, zipcode or both changed
+-- Insert the new active row first so the self-join in Step 2 can detect the old row
 INSERT INTO valsanv_ZAGIMORE_DS.CustomerDimension (CustomerID, CustomerName, CustomerZip, ExtractionTimestamp, cd_loaded, DateValidFrom, DateValidUntil, CurrentStatus)
-SELECT c.customerid, c.customername, c.customerzip, NOW(), FALSE, NOW(), '2035-01-01', TRUE
+SELECT c.customerid, c.customername, c.customerzip, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
 FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
 WHERE c.customerid = cd.CustomerID
+AND cd.CurrentStatus = TRUE
 AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
+
+-- STEP 2: Expire the old row via a self-join on CustomerKey
+-- cd1 is the old row (lower auto-increment CustomerKey), cd2 is the new row just inserted above
+-- WHY CustomerKey AND NOT DateValidFrom: DateValidFrom is date-only, so if a customer is loaded
+-- and changed on the same calendar day both rows share the same date and the condition
+-- cd1.DateValidFrom < cd2.DateValidFrom evaluates to FALSE -- old row never gets expired.
+-- CustomerKey is auto-increment and strictly increases, so it reliably identifies the older row
+-- regardless of when the change happens.
+UPDATE valsanv_ZAGIMORE_DS.CustomerDimension cd1, valsanv_ZAGIMORE_DS.CustomerDimension cd2
+SET cd1.DateValidUntil = DATE(NOW()) - INTERVAL 1 DAY, cd1.CurrentStatus = FALSE, cd1.cd_loaded = FALSE
+WHERE cd1.CustomerID = cd2.CustomerID
+AND cd1.CustomerKey < cd2.CustomerKey                                         -- cd1 is the older row (lower auto-increment key)
+AND cd1.CurrentStatus = TRUE;
 
 -- Loading the Customer Dimension in DW with all the changed rows and new rows from Customer Dimension in DS
 REPLACE INTO valsanv_ZAGIMORE_DW.CustomerDimension (CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus)
@@ -897,29 +907,81 @@ WHERE cd_loaded = FALSE;
 
 -- Now we can wrap all the CustomerDimension type-2 changes into a single stored procedure
 -- procedure for Customer Dimension Type-2 changes refresh
-DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.customer_dimension_type2_refresh;
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.customer_dimension_type2_refresh_ver1;
 
 DELIMITER $$$
 
-CREATE PROCEDURE valsanv_ZAGIMORE_DS.customer_dimension_type2_refresh()
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.customer_dimension_type2_refresh_ver1()
 BEGIN
 
-    -- Updating existing rows in the Customer Dimension whose name or zipcode (or both) has changed by setting their DateValidUntil to yesterday's date and CurrentStatus to FALSE
+    -- -------------------------------------------------------
+    -- STEP 1: Expire the active DS row for changed customers
+    -- -------------------------------------------------------
+    -- For each customer whose name or zip now differs from the operational DB,
+    -- close out their current row: set DateValidUntil to yesterday, flip
+    -- CurrentStatus to FALSE, and mark cd_loaded = FALSE so the DW sync
+    -- picks it up in Step 3.
+    --
+    -- WHY "AND cd.CurrentStatus = TRUE":
+    --   Without this filter, historical rows (old name/zip still stored from
+    --   prior SCD changes) would keep matching the WHERE clause on every run,
+    --   causing the procedure to insert a new row every time it is called even
+    --   when nothing actually changed. Filtering to only the active row makes
+    --   the procedure idempotent (safe to run multiple times).
     UPDATE valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
     SET cd.DateValidUntil = DATE(NOW()) - INTERVAL 1 DAY, cd.CurrentStatus = FALSE, cd_loaded = FALSE
     WHERE c.customerid = cd.CustomerID
+    AND cd.CurrentStatus = TRUE                                               -- only touch the live row, not historical ones
     AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
 
-    -- Inserting new rows in the Customer Dimension for those customers whose name, zipcode or both changed
+    -- -------------------------------------------------------
+    -- STEP 2: Insert new active DS row for changed customers
+    -- -------------------------------------------------------
+    -- After Step 1, any changed customer has NO row with CurrentStatus = TRUE.
+    -- We insert a fresh row with today as DateValidFrom and a far-future
+    -- DateValidUntil, representing the new "current" version of that customer.
+    --
+    -- HOW THE EXISTS / NOT EXISTS PATTERN WORKS:
+    --   EXISTS(...)      → keeps only customers already in the dimension
+    --                      (brand-new customers are handled by customer_dimension_refresh, not here)
+    --   NOT EXISTS(... AND CurrentStatus = TRUE)
+    --                    → keeps only customers with NO active row, i.e., those
+    --                      whose row was just expired in Step 1
+    --
+    -- WHY "SELECT 1" inside EXISTS:
+    --   EXISTS only checks whether the subquery returns at least one row; it
+    --   never uses the actual value. Writing SELECT 1 (instead of SELECT *)
+    --   signals that we only care about existence, not the data itself.
     INSERT INTO valsanv_ZAGIMORE_DS.CustomerDimension (CustomerID, CustomerName, CustomerZip, ExtractionTimestamp, cd_loaded, DateValidFrom, DateValidUntil, CurrentStatus)
     SELECT c.customerid, c.customername, c.customerzip, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
-    FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
-    WHERE c.customerid = cd.CustomerID
-    AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
+    FROM valsanv_ZAGIMORE.customer c
+    WHERE EXISTS (
+        SELECT 1 FROM valsanv_ZAGIMORE_DS.CustomerDimension cd
+        WHERE cd.CustomerID = c.customerid          -- customer already exists in the dimension
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM valsanv_ZAGIMORE_DS.CustomerDimension cd
+        WHERE cd.CustomerID = c.customerid AND cd.CurrentStatus = TRUE  -- but has no active row (just expired)
+    );
 
-    -- 1) Drop the foreign key reference from the RevenueFactTable, OneWayProductCategoryAggregate and OneWayRegionAggregate tables
+    -- -------------------------------------------------------
+    -- STEP 3: Sync changed rows from DS into the DW
+    -- -------------------------------------------------------
+    -- Foreign keys on RevenueFactTable, OneWayProductCategoryAggregate, and
+    -- OneWayRegionAggregate all point to DW.CustomerDimension. MySQL won't let
+    -- us modify a referenced row while those constraints are active, so we
+    -- drop them before the sync and re-add them after.
+    --
+    -- WHY REPLACE INTO (not INSERT):
+    --   The expired old rows already exist in the DW with their CustomerKey.
+    --   REPLACE INTO updates them in place (sets CurrentStatus = FALSE,
+    --   DateValidUntil = yesterday) instead of inserting duplicates.
+    --   The new active rows are brand-new CustomerKeys, so REPLACE INTO
+    --   inserts them normally.
+
+    -- 1) Drop FK constraints so we can modify CustomerDimension rows in the DW
     ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
-    DROP Foreign Key RevenueFactTable_ibfk_4; -- get the value from the "Constraint properties" under the "Relation view" tab of the corrensponding table in the DW
+    DROP Foreign Key RevenueFactTable_ibfk_4;           -- FK value from: DW table → Relation view → Constraint properties
 
     ALTER TABLE valsanv_ZAGIMORE_DW.OneWayProductCategoryAggregate
     DROP Foreign Key OneWayProductCategoryAggregate_ibfk_1;
@@ -927,14 +989,14 @@ BEGIN
     ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
     DROP Foreign Key OneWayRegionAggregate_ibfk_1;
 
-    -- 2) Make the changes to the CustomerDimension table in DW by running the above "REPLACE INTO" code block
-    -- Loading the Customer Dimension in DW with all the changed rows and new rows from Customer Dimension in DS
+    -- 2) Push all unloaded DS rows (cd_loaded = FALSE) into the DW
+    --    This covers both the expired old rows and the new active rows from Steps 1 & 2
     REPLACE INTO valsanv_ZAGIMORE_DW.CustomerDimension (CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus)
     SELECT CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus
     FROM valsanv_ZAGIMORE_DS.CustomerDimension
     WHERE cd_loaded = FALSE;
 
-    -- 3) Add back the foreign key references
+    -- 3) Restore the FK constraints
     ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
     ADD CONSTRAINT RevenueFactTable_ibfk_4
     FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
@@ -947,7 +1009,121 @@ BEGIN
     ADD CONSTRAINT OneWayRegionAggregate_ibfk_1
     FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
 
-    -- 4) Update the cd_loaded column in the CustomerDimension table in DS
+    -- -------------------------------------------------------
+    -- STEP 4: Mark all synced DS rows as loaded
+    -- -------------------------------------------------------
+    -- Flip cd_loaded = TRUE for every row we just pushed to the DW,
+    -- so they are not re-processed on the next ETL run.
+    UPDATE valsanv_ZAGIMORE_DS.CustomerDimension
+    SET cd_loaded = TRUE
+    WHERE cd_loaded = FALSE;
+
+END$$$
+
+DELIMITER ;
+
+
+-- =========================================================================================================================
+-- Alternative Type-2 Customer Dimension refresh procedure using the peer's approach (vemular_S26).
+-- Key difference from _ver1: INSERT the new row FIRST, then expire the old row via a self-join.
+-- Both versions are idempotent and produce the same result; the logic order is reversed.
+-- =========================================================================================================================
+
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.customer_dimension_type2_refresh_ver2;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.customer_dimension_type2_refresh_ver2()
+BEGIN
+
+    -- -------------------------------------------------------
+    -- STEP 1: Insert new active DS row for changed customers
+    -- -------------------------------------------------------
+    -- Join the operational customer table against the DS dimension, restricted to
+    -- CurrentStatus = TRUE (the live row only). Where name or zip differs, insert
+    -- a fresh row with today as DateValidFrom and a far-future DateValidUntil.
+    --
+    -- WHY INSERT BEFORE EXPIRE (opposite of _ver1):
+    --   We need the new row to exist first so that Step 2's self-join can detect
+    --   the old row by comparing DateValidFrom dates (cd1.DateValidFrom < cd2.DateValidFrom).
+    --   Without the new row, the self-join has nothing to compare against.
+    --
+    -- WHY "AND cd.CurrentStatus = TRUE" prevents duplicate inserts on re-run:
+    --   On a second run with no new changes, the operational DB matches the current
+    --   active row exactly, so the WHERE clause finds no mismatches → nothing inserted.
+    INSERT INTO valsanv_ZAGIMORE_DS.CustomerDimension (CustomerID, CustomerName, CustomerZip, ExtractionTimestamp, cd_loaded, DateValidFrom, DateValidUntil, CurrentStatus)
+    SELECT c.customerid, c.customername, c.customerzip, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
+    FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
+    WHERE c.customerid = cd.CustomerID
+    AND cd.CurrentStatus = TRUE                                               -- compare only against the live row
+    AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
+
+    -- -------------------------------------------------------
+    -- STEP 2: Expire the old DS row via a self-join
+    -- -------------------------------------------------------
+    -- Now that the new row exists, find pairs of rows for the same customer where
+    -- cd1 is the older version and cd1 is still marked as active. Close out cd1
+    -- by setting DateValidUntil to yesterday, flipping CurrentStatus to FALSE,
+    -- and marking cd_loaded = FALSE so the DW sync in Step 3 picks it up.
+    --
+    -- HOW THE SELF-JOIN WORKS:
+    --   We join CustomerDimension to itself on CustomerID. cd1 is the old row,
+    --   cd2 is the new row just inserted in Step 1. We compare CustomerKey to
+    --   identify which row is older. Without Step 1 having run first, cd2 would
+    --   not exist and nothing would match.
+    --
+    -- WHY CustomerKey AND NOT DateValidFrom:
+    --   CustomerKey is an auto-increment surrogate key — every new row always gets
+    --   a strictly higher value than any existing row, regardless of the date.
+    --   DateValidFrom is date-only (no time), so if a customer is first loaded and
+    --   then changed on the same calendar day, both the old and new rows would have
+    --   the same DateValidFrom. In that case cd1.DateValidFrom < cd2.DateValidFrom
+    --   evaluates to FALSE and the old row never gets expired — a silent bug.
+    --   CustomerKey has no such same-day collision risk.
+    UPDATE valsanv_ZAGIMORE_DS.CustomerDimension cd1, valsanv_ZAGIMORE_DS.CustomerDimension cd2
+    SET cd1.DateValidUntil = DATE(NOW()) - INTERVAL 1 DAY, cd1.CurrentStatus = FALSE, cd1.cd_loaded = FALSE
+    WHERE cd1.CustomerID = cd2.CustomerID
+    AND cd1.CustomerKey < cd2.CustomerKey                                     -- cd1 is the older row (lower auto-increment key)
+    AND cd1.CurrentStatus = TRUE;                                             -- only close out still-active rows
+
+    -- -------------------------------------------------------
+    -- STEP 3: Sync changed rows from DS into the DW
+    -- -------------------------------------------------------
+    -- Drop FK constraints, push unloaded DS rows to DW via REPLACE INTO,
+    -- then restore the constraints. Same pattern as _ver1.
+
+    -- 1) Drop FK constraints so we can modify CustomerDimension rows in the DW
+    ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
+    DROP Foreign Key RevenueFactTable_ibfk_4;
+
+    ALTER TABLE valsanv_ZAGIMORE_DW.OneWayProductCategoryAggregate
+    DROP Foreign Key OneWayProductCategoryAggregate_ibfk_1;
+
+    ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
+    DROP Foreign Key OneWayRegionAggregate_ibfk_1;
+
+    -- 2) Push all unloaded DS rows (expired old rows + new active rows) into the DW
+    REPLACE INTO valsanv_ZAGIMORE_DW.CustomerDimension (CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus)
+    SELECT CustomerKey, CustomerID, CustomerName, CustomerZip, DateValidFrom, DateValidUntil, CurrentStatus
+    FROM valsanv_ZAGIMORE_DS.CustomerDimension
+    WHERE cd_loaded = FALSE;
+
+    -- 3) Restore the FK constraints
+    ALTER TABLE valsanv_ZAGIMORE_DW.RevenueFactTable
+    ADD CONSTRAINT RevenueFactTable_ibfk_4
+    FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
+
+    ALTER TABLE valsanv_ZAGIMORE_DW.OneWayProductCategoryAggregate
+    ADD CONSTRAINT OneWayProductCategoryAggregate_ibfk_1
+    FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
+
+    ALTER TABLE valsanv_ZAGIMORE_DW.OneWayRegionAggregate
+    ADD CONSTRAINT OneWayRegionAggregate_ibfk_1
+    FOREIGN KEY (CustomerKey) REFERENCES valsanv_ZAGIMORE_DW.CustomerDimension(CustomerKey);
+
+    -- -------------------------------------------------------
+    -- STEP 4: Mark all synced DS rows as loaded
+    -- -------------------------------------------------------
     UPDATE valsanv_ZAGIMORE_DS.CustomerDimension
     SET cd_loaded = TRUE
     WHERE cd_loaded = FALSE;
@@ -1464,3 +1640,264 @@ CALL valsanv_ZAGIMORE_DS.sp_validate_customer_dimension();
     and do not carry analytical significance that would require preserving historical versions.
 */
 -- =========================================================================================================================
+
+-- =========================================================================================================================
+-- Updated daily_fact_refresh and late_arriving_fact_refresh to account for Type-2 SCD
+-- BUG: the original procedures joined CustomerDimension and ProductDimension on ID only,
+-- which matches ALL versions of a customer/product (current + expired historical rows).
+-- FIX: add i.FullDate BETWEEN DateValidFrom AND DateValidUntil to each dimension join,
+-- so each fact is linked to the dimension row that was valid at transaction time.
+-- StoreDimension and CalendarDimension are unchanged — no Type-2 on either.
+-- =========================================================================================================================
+
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.daily_fact_refresh;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.daily_fact_refresh()
+BEGIN
+    DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
+
+    CREATE TABLE IF NOT EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable AS
+    SELECT sv.noofitems * p.productprice AS DollarAmount, "Sale" AS RevenueSource, sv.tid, p.productid, s.storeid, s.tdate AS FullDate, s.customerid
+    FROM valsanv_ZAGIMORE.soldvia as sv, valsanv_ZAGIMORE.product p, valsanv_ZAGIMORE.salestransaction s
+    WHERE sv.productid = p.productid
+    AND sv.tid = s.tid
+    AND s.tdate > (SELECT MAX(ExtractionTimestamp) FROM valsanv_ZAGIMORE_DS.RevenueFactTable)
+    UNION
+    SELECT rv.duration * r.productpricedaily AS DollarAmount, "Rental_Daily" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
+    FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
+    WHERE rv.productid = r.productid
+    AND rv.tid = rt.tid
+    AND rv.rentaltype = "D"
+    AND rt.tdate > (SELECT MAX(ExtractionTimestamp) FROM valsanv_ZAGIMORE_DS.RevenueFactTable)
+    UNION
+    SELECT rv.duration * r.productpriceweekly AS DollarAmount, "Rental_Weekly" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
+    FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
+    WHERE rv.productid = r.productid
+    AND rv.tid = rt.tid
+    AND rv.rentaltype = "W"
+    AND rt.tdate > (SELECT MAX(ExtractionTimestamp) FROM valsanv_ZAGIMORE_DS.RevenueFactTable);
+
+    ALTER TABLE valsanv_ZAGIMORE_DS.IntermediateFactTable
+    MODIFY COLUMN RevenueSource VARCHAR(25) COLLATE utf8mb4_0900_ai_ci NOT NULL;
+
+    INSERT INTO valsanv_ZAGIMORE_DS.RevenueFactTable(DollarAmount, RevenueSource, TID, CustomerKey, StoreKey, CalendarKey, ProductKey, ExtractionTimestamp, f_loaded)
+    SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), FALSE
+    FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i
+    JOIN valsanv_ZAGIMORE_DS.CustomerDimension AS cd ON cd.CustomerID = i.customerid
+        AND i.FullDate BETWEEN cd.DateValidFrom AND cd.DateValidUntil  -- Type-2 fix: match the customer row valid at transaction time, not all versions
+    JOIN valsanv_ZAGIMORE_DS.StoreDimension AS sd ON sd.StoreID = i.storeid
+    JOIN valsanv_ZAGIMORE_DS.CalendarDimension AS cad ON cad.FullDate = i.FullDate
+    JOIN valsanv_ZAGIMORE_DS.ProductDimension AS pd ON pd.ProductID = i.productid
+        AND pd.ProductType = "S"
+        AND i.FullDate BETWEEN pd.DateValidFrom AND pd.DateValidUntil  -- Type-2 fix: match the product row valid at transaction time, not all versions
+    WHERE i.RevenueSource = "Sale"
+    UNION
+    SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), FALSE
+    FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i
+    JOIN valsanv_ZAGIMORE_DS.CustomerDimension AS cd ON cd.CustomerID = i.customerid
+        AND i.FullDate BETWEEN cd.DateValidFrom AND cd.DateValidUntil  -- Type-2 fix: match the customer row valid at transaction time, not all versions
+    JOIN valsanv_ZAGIMORE_DS.StoreDimension AS sd ON sd.StoreID = i.storeid
+    JOIN valsanv_ZAGIMORE_DS.CalendarDimension AS cad ON cad.FullDate = i.FullDate
+    JOIN valsanv_ZAGIMORE_DS.ProductDimension AS pd ON pd.ProductID = i.productid
+        AND pd.ProductType = "R"
+        AND i.FullDate BETWEEN pd.DateValidFrom AND pd.DateValidUntil  -- Type-2 fix: match the product row valid at transaction time, not all versions
+    WHERE i.RevenueSource IN ("Rental_Weekly", "Rental_Daily");
+
+    INSERT INTO valsanv_ZAGIMORE_DW.RevenueFactTable (DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey)
+    SELECT DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey
+    FROM valsanv_ZAGIMORE_DS.RevenueFactTable
+    WHERE f_loaded = FALSE;
+
+    UPDATE valsanv_ZAGIMORE_DS.RevenueFactTable
+    SET f_loaded = TRUE
+    WHERE f_loaded = FALSE;
+
+    DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
+END$$$
+
+DELIMITER ;
+
+-- =========================================================================================================================
+
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.late_arriving_fact_refresh;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.late_arriving_fact_refresh()
+BEGIN
+    DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
+
+    CREATE TABLE IF NOT EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable AS
+    SELECT sv.noofitems * p.productprice AS DollarAmount, "Sale" AS RevenueSource, sv.tid, p.productid, s.storeid, s.tdate AS FullDate, s.customerid
+    FROM valsanv_ZAGIMORE.soldvia as sv, valsanv_ZAGIMORE.product p, valsanv_ZAGIMORE.salestransaction s
+    WHERE sv.productid = p.productid
+    AND sv.tid = s.tid
+    AND s.tid NOT IN (SELECT DISTINCT tid FROM valsanv_ZAGIMORE_DS.RevenueFactTable)
+    UNION
+    SELECT rv.duration * r.productpricedaily AS DollarAmount, "Rental_Daily" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
+    FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
+    WHERE rv.productid = r.productid
+    AND rv.tid = rt.tid
+    AND rv.rentaltype = "D"
+    AND rt.tid NOT IN (SELECT DISTINCT tid FROM valsanv_ZAGIMORE_DS.RevenueFactTable)
+    UNION
+    SELECT rv.duration * r.productpriceweekly AS DollarAmount, "Rental_Weekly" AS RevenueSource, rv.tid, r.productid, rt.storeid, rt.tdate AS FullDate, rt.customerid
+    FROM valsanv_ZAGIMORE.rentvia as rv, valsanv_ZAGIMORE.rentalProducts as r, valsanv_ZAGIMORE.rentaltransaction rt
+    WHERE rv.productid = r.productid
+    AND rv.tid = rt.tid
+    AND rv.rentaltype = "W"
+    AND rt.tid NOT IN (SELECT DISTINCT tid FROM valsanv_ZAGIMORE_DS.RevenueFactTable);
+
+    ALTER TABLE valsanv_ZAGIMORE_DS.IntermediateFactTable
+    MODIFY COLUMN RevenueSource VARCHAR(25) COLLATE utf8mb4_0900_ai_ci NOT NULL;
+
+    INSERT INTO valsanv_ZAGIMORE_DS.RevenueFactTable(DollarAmount, RevenueSource, TID, CustomerKey, StoreKey, CalendarKey, ProductKey, ExtractionTimestamp, f_loaded)
+    SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), FALSE
+    FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i
+    JOIN valsanv_ZAGIMORE_DS.CustomerDimension AS cd ON cd.CustomerID = i.customerid
+        AND i.FullDate BETWEEN cd.DateValidFrom AND cd.DateValidUntil  -- Type-2 fix: match the customer row valid at transaction time, not all versions
+    JOIN valsanv_ZAGIMORE_DS.StoreDimension AS sd ON sd.StoreID = i.storeid
+    JOIN valsanv_ZAGIMORE_DS.CalendarDimension AS cad ON cad.FullDate = i.FullDate
+    JOIN valsanv_ZAGIMORE_DS.ProductDimension AS pd ON pd.ProductID = i.productid
+        AND pd.ProductType = "S"
+        AND i.FullDate BETWEEN pd.DateValidFrom AND pd.DateValidUntil  -- Type-2 fix: match the product row valid at transaction time, not all versions
+    WHERE i.RevenueSource = "Sale"
+    UNION
+    SELECT i.DollarAmount, i.RevenueSource, i.tid, cd.CustomerKey, sd.StoreKey, cad.CalendarKey, pd.ProductKey, NOW(), FALSE
+    FROM valsanv_ZAGIMORE_DS.IntermediateFactTable AS i
+    JOIN valsanv_ZAGIMORE_DS.CustomerDimension AS cd ON cd.CustomerID = i.customerid
+        AND i.FullDate BETWEEN cd.DateValidFrom AND cd.DateValidUntil  -- Type-2 fix: match the customer row valid at transaction time, not all versions
+    JOIN valsanv_ZAGIMORE_DS.StoreDimension AS sd ON sd.StoreID = i.storeid
+    JOIN valsanv_ZAGIMORE_DS.CalendarDimension AS cad ON cad.FullDate = i.FullDate
+    JOIN valsanv_ZAGIMORE_DS.ProductDimension AS pd ON pd.ProductID = i.productid
+        AND pd.ProductType = "R"
+        AND i.FullDate BETWEEN pd.DateValidFrom AND pd.DateValidUntil  -- Type-2 fix: match the product row valid at transaction time, not all versions
+    WHERE i.RevenueSource IN ("Rental_Weekly", "Rental_Daily");
+
+    INSERT INTO valsanv_ZAGIMORE_DW.RevenueFactTable (DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey)
+    SELECT DollarAmount, RevenueSource, TID, ProductKey, StoreKey, CalendarKey, CustomerKey
+    FROM valsanv_ZAGIMORE_DS.RevenueFactTable
+    WHERE f_loaded = FALSE;
+
+    UPDATE valsanv_ZAGIMORE_DS.RevenueFactTable
+    SET f_loaded = TRUE
+    WHERE f_loaded = FALSE;
+
+    DROP TABLE IF EXISTS valsanv_ZAGIMORE_DS.IntermediateFactTable;
+END$$$
+
+DELIMITER ;
+
+-- =========================================================================================================================
+
+-- =========================================================================================================================
+-- Self: 04-17-2026 - Bug fix: updated customer_dimension_type2_refresh and wrote two versions of updated procedures
+-- =========================================================================================================================
+
+-- Let's insert some more new data into the ZAGIMORE operational database and test the the different stored procedures for the ETL
+
+-- daily_fact_refresh
+-- Creating new instances of operational data: new sales transaction
+-- Create one new sales transaction record in the salestransaction table of the ZAGIMORE  operational database.
+INSERT INTO valsanv_ZAGIMORE.salestransaction (tid, tdate, customerid, storeid)
+VALUES ("N013", '2026-04-17', "8-9-000", "S7");
+
+-- Create two new records in the sold_via table for that new transaction, showing purchases of two products 
+INSERT INTO valsanv_ZAGIMORE.soldvia (productid, tid, noofitems)
+VALUES ("1X1", "N013", 3), ("1X2", "N013", 5);
+
+-- Creating new instances of operational data: new rental transaction
+INSERT INTO valsanv_ZAGIMORE.rentaltransaction (tid, tdate, customerid, storeid) VALUES ("N014", '2026-04-17', "8-9-000", "S3");
+INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("1X1", "N014", "D", 5);
+INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("2X2", "N014", "W", 5);
+
+-- then run validate > refresh > validate
+
+-- late_arriving_fact_refresh
+-- Creating new instances of operational data: new sales transaction
+-- Create one new sales transaction record in the salestransaction table of the ZAGIMORE  operational database.
+INSERT INTO valsanv_ZAGIMORE.salestransaction (tid, tdate, customerid, storeid)
+VALUES ("N015", '2026-04-15', "8-9-000", "S7");
+
+-- Create two new records in the sold_via table for that new transaction, showing purchases of two products 
+INSERT INTO valsanv_ZAGIMORE.soldvia (productid, tid, noofitems)
+VALUES ("1X1", "N015", 3), ("1X2", "N015", 5);
+
+-- Creating new instances of operational data: new rental transaction
+INSERT INTO valsanv_ZAGIMORE.rentaltransaction (tid, tdate, customerid, storeid) VALUES ("N016", '2026-04-15', "8-9-000", "S3");
+INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("1X1", "N016", "D", 5);
+INSERT INTO valsanv_ZAGIMORE.rentvia (productid, tid, rentaltype, duration) VALUES ("2X2", "N016", "W", 5);
+
+-- then run validate > refresh > validate
+
+-- customer_dimension_refresh
+-- Insert a new customer into the operational DB to test the procedure
+INSERT INTO valsanv_ZAGIMORE.customer (customerid, customername, customerzip)
+VALUES ("9-1-003", "Customer 003", "55499");
+
+-- then run validate > refresh > validate
+
+-- product_dimension_refresh
+-- new product
+INSERT INTO valsanv_ZAGIMORE.product ( productid, productname, productprice, vendorid, categoryid ) 
+VALUES ( "1Y6", "Test Product 06", 250.00, "PG", "CL" );
+-- new rental product
+INSERT INTO valsanv_ZAGIMORE.rentalProducts ( productid, productname, productpricedaily, productpriceweekly, vendorid, categoryid ) 
+VALUES ( "1Z6", "Test Rental Product 06", 25.00, 100.00, "PG", "CL" );
+
+-- then run validate > refresh > validate
+
+-- store_dimension_refresh
+-- Create two new stores in the operational DB to test the refresh
+INSERT INTO valsanv_ZAGIMORE.store (storeid, storezip, regionid)
+VALUES ("S19", "13110", "N");
+
+INSERT INTO valsanv_ZAGIMORE.store (storeid, storezip, regionid)
+VALUES ("S20", "10101", "C");
+
+-- then run validate > refresh > validate
+
+-- customer_dimension_type2_refresh_ver1
+-- 3 Changes in the Customer Table
+UPDATE `customer` SET `customername` = 'Customer 101' WHERE `customer`.`customerid` = '9-1-001';
+UPDATE `customer` SET `customerzip` = '55500' WHERE `customer`.`customerid` = '9-1-002';
+UPDATE `customer` SET `customername` = 'Customer 103', `customerzip` = '55500' WHERE `customer`.`customerid` = '9-1-003';
+
+-- then run validate > refresh > validate
+
+-- customer_dimension_type2_refresh_ver2
+-- 3 Changes in the Customer Table
+UPDATE `customer` SET `customername` = 'Customer 111' WHERE `customer`.`customerid` = '9-1-001';
+UPDATE `customer` SET `customerzip` = '55501' WHERE `customer`.`customerid` = '9-1-002';
+UPDATE `customer` SET `customername` = 'Customer 113', `customerzip` = '55501' WHERE `customer`.`customerid` = '9-1-003';
+
+-- 3 Changes in the Customer Table
+UPDATE `customer` SET `customername` = 'Customer 121' WHERE `customer`.`customerid` = '9-1-001';
+UPDATE `customer` SET `customerzip` = '55502' WHERE `customer`.`customerid` = '9-1-002';
+UPDATE `customer` SET `customername` = 'Customer 123', `customerzip` = '55502' WHERE `customer`.`customerid` = '9-1-003';
+
+-- 3 Changes in the Customer Table
+UPDATE `customer` SET `customername` = 'Customer 131' WHERE `customer`.`customerid` = '9-1-001';
+UPDATE `customer` SET `customerzip` = '55503' WHERE `customer`.`customerid` = '9-1-002';
+UPDATE `customer` SET `customername` = 'Customer 133', `customerzip` = '55503' WHERE `customer`.`customerid` = '9-1-003';
+
+-- 3 Changes in the Customer Table
+UPDATE `customer` SET `customername` = 'Customer 141' WHERE `customer`.`customerid` = '9-1-001';
+UPDATE `customer` SET `customerzip` = '55504' WHERE `customer`.`customerid` = '9-1-002';
+UPDATE `customer` SET `customername` = 'Customer 143', `customerzip` = '55504' WHERE `customer`.`customerid` = '9-1-003';
+
+-- then run validate > refresh > validate
+
+-- product_dimension_type2_refresh
+-- Simulate changes: update a sale product and a rental product in the operational DB
+UPDATE valsanv_ZAGIMORE.product
+SET productname = 'Test Product 03 Updated', productprice = 300.00
+WHERE productid = '1Y3';
+
+UPDATE valsanv_ZAGIMORE.rentalProducts
+SET productname = 'Test Rental Updated 03', productpricedaily = 30.00, productpriceweekly = 120.00
+WHERE productid = '1Z3';
+
+-- then run validate > refresh > validate

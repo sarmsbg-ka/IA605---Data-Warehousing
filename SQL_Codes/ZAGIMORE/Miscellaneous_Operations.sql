@@ -45,8 +45,19 @@ WHERE ExtractionTimestamp = '2026-04-01 17:13:38';
 
 
 SELECT *
-FROM dubek_ZAGIMORE_DS.RevenueFactTable
-WHERE tid like 'T%';
+FROM RevenueFactTable
+WHERE TID like 'N%';
+
+-- DELETE
+SELECT *
+FROM RevenueFactTable
+WHERE TID IN ("N013", "N014");
+
+SELECT * FROM `CustomerDimension` ORDER BY `CustomerDimension`.`CustomerID`, `CustomerDimension`.`CustomerKey` ASC;
+
+UPDATE `CustomerDimension` SET `DateValidUntil` = '2026-04-17', `CurrentStatus` = '0' WHERE `CustomerDimension`.`CustomerKey` = 17; 
+UPDATE `CustomerDimension` SET `DateValidUntil` = '2026-04-17', `CurrentStatus` = '0' WHERE `CustomerDimension`.`CustomerKey` = 18; 
+UPDATE `CustomerDimension` SET `DateValidUntil` = '2026-04-17', `CurrentStatus` = '0' WHERE `CustomerDimension`.`CustomerKey` = 19;
 
 -- =========================================================================================================================
 -- Lecture 04/14/2026: Naveen
@@ -66,9 +77,10 @@ UPDATE valsanv_ZAGIMORE_DS.CustomerDimension
 SET DateValidFrom = '2013-01-01', DateValidUntil = '2035-01-01', CurrentStatus = TRUE;
 
 INSERT INTO valsanv_ZAGIMORE_DS.CustomerDimension (CustomerID, CustomerName, CustomerZip, ExtractionTimestamp, cd_loaded, DateValidFrom, DateValidUntil, CurrentStatus)
-SELECT c.customerid, c.customername, c.customerzip, NOW(), FALSE, NOW(), '2035-01-01', TRUE
+SELECT c.customerid, c.customername, c.customerzip, NOW(), FALSE, DATE(NOW()), '2035-01-01', TRUE
 FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
 WHERE c.customerid = cd.CustomerID
+AND cd.CurrentStatus = TRUE
 AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
 
 -- track the update made on the customer table in ZAGIMORE, like
@@ -79,6 +91,7 @@ AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
 SELECT cd.CustomerKey, cd.CustomerID, cd.CustomerName, cd.CustomerZip, cd.DateValidFrom, cd.DateValidUntil, cd.CurrentStatus
 FROM valsanv_ZAGIMORE.customer c, valsanv_ZAGIMORE_DS.CustomerDimension cd
 WHERE c.customerid = cd.CustomerID
+AND cd.CurrentStatus = TRUE
 AND (c.customername != cd.CustomerName OR c.customerzip != cd.CustomerZip);
 
 -- now perform the insert
