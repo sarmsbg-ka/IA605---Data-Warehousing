@@ -1591,6 +1591,8 @@ END$$$
 
 DELIMITER ;
 
+-- =========================================================================================================================
+
 -- Updated sp_validate_customer_dimension: filters DS and DW counts to current rows only
 DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.sp_validate_customer_dimension;
 
@@ -1791,8 +1793,6 @@ END$$$
 DELIMITER ;
 
 -- =========================================================================================================================
-
--- =========================================================================================================================
 -- Self: 04-17-2026 - Bug fix: updated customer_dimension_type2_refresh and wrote two versions of updated procedures
 -- =========================================================================================================================
 
@@ -1901,3 +1901,134 @@ SET productname = 'Test Rental Updated 03', productpricedaily = 30.00, productpr
 WHERE productid = '1Z3';
 
 -- then run validate > refresh > validate
+
+-- =========================================================================================================================
+-- Self: 04-20-2026 - new stored procedures for checking whether type-2 refresh is needed in customer and product dimensions
+-- =========================================================================================================================
+
+-- Customer Type-2 check procedure
+/* This checks whether any current customer row in DS differs from the source system and therefore needs a Type 2 refresh. */
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.sp_check_customer_type2_needed;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.sp_check_customer_type2_needed()
+BEGIN
+    DECLARE change_count INT DEFAULT 0;
+
+    SELECT COUNT(*)
+    INTO change_count
+    FROM valsanv_ZAGIMORE.customer c
+    JOIN valsanv_ZAGIMORE_DS.CustomerDimension cd
+        ON c.customerid = cd.CustomerID
+    WHERE cd.CurrentStatus = TRUE
+      AND (
+            c.customername <> cd.CustomerName
+         OR c.customerzip  <> cd.CustomerZip
+      );
+
+    SELECT
+        'CustomerDimension' AS dimension_name,
+        change_count AS rows_needing_type2_refresh,
+        CASE
+            WHEN change_count > 0 THEN 'YES'
+            ELSE 'NO'
+        END AS type2_refresh_needed;
+END$$$
+
+DELIMITER ;
+
+-- =========================================================================================================================
+
+-- Product Type-2 check procedure
+/* This checks whether any current product row in DS differs from the source system and therefore needs a Type 2 refresh.
+Because we have two operational product sources, this procedure checks both:
+    sale products from product with ProductType = 'S'
+    rental products from rentalProducts with ProductType = 'R' */
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.sp_check_product_type2_needed;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.sp_check_product_type2_needed()
+BEGIN
+    DECLARE sale_change_count INT DEFAULT 0;
+    DECLARE rental_change_count INT DEFAULT 0;
+    DECLARE total_change_count INT DEFAULT 0;
+
+    -- Check sale products
+    SELECT COUNT(*)
+    INTO sale_change_count
+    FROM valsanv_ZAGIMORE.product p
+    JOIN valsanv_ZAGIMORE.vendor v
+        ON p.vendorid = v.vendorid
+    JOIN valsanv_ZAGIMORE.category c
+        ON p.categoryid = c.categoryid
+    JOIN valsanv_ZAGIMORE_DS.ProductDimension pd
+        ON p.productid = pd.ProductID
+    WHERE pd.CurrentStatus = TRUE
+      AND pd.ProductType = 'S'
+      AND (
+            p.productname <> pd.ProductName
+         OR p.vendorid    <> pd.VendorID
+         OR p.categoryid  <> pd.CategoryID
+         OR v.vendorname  <> pd.VendorName
+         OR c.categoryname <> pd.CategoryName
+         OR p.productprice <> pd.ProductSalePrice
+      );
+
+    -- Check rental products
+    SELECT COUNT(*)
+    INTO rental_change_count
+    FROM valsanv_ZAGIMORE.rentalProducts r
+    JOIN valsanv_ZAGIMORE.vendor v
+        ON r.vendorid = v.vendorid
+    JOIN valsanv_ZAGIMORE.category c
+        ON r.categoryid = c.categoryid
+    JOIN valsanv_ZAGIMORE_DS.ProductDimension pd
+        ON r.productid = pd.ProductID
+    WHERE pd.CurrentStatus = TRUE
+      AND pd.ProductType = 'R'
+      AND (
+            r.productname        <> pd.ProductName
+         OR r.vendorid           <> pd.VendorID
+         OR r.categoryid         <> pd.CategoryID
+         OR v.vendorname         <> pd.VendorName
+         OR c.categoryname       <> pd.CategoryName
+         OR r.productpricedaily  <> pd.ProductPriceDaily
+         OR r.productpriceweekly <> pd.ProductPriceWeekly
+      );
+
+    SET total_change_count = sale_change_count + rental_change_count;
+
+    SELECT
+        'ProductDimension' AS dimension_name,
+        sale_change_count AS sale_rows_needing_type2_refresh,
+        rental_change_count AS rental_rows_needing_type2_refresh,
+        total_change_count AS total_rows_needing_type2_refresh,
+        CASE
+            WHEN total_change_count > 0 THEN 'YES'
+            ELSE 'NO'
+        END AS type2_refresh_needed;
+END$$$
+
+DELIMITER ;
+
+-- =========================================================================================================================
+
+-- Code for combined daily refresh procedure -- for automated refresh
+DROP PROCEDURE IF EXISTS valsanv_ZAGIMORE_DS.daily_refresh;
+
+DELIMITER $$$
+
+CREATE PROCEDURE valsanv_ZAGIMORE_DS.daily_refresh()
+BEGIN
+    CALL valsanv_ZAGIMORE_DS.product_dimension_refresh();
+    CALL valsanv_ZAGIMORE_DS.customer_dimension_refresh();
+    CALL valsanv_ZAGIMORE_DS.store_dimension_refresh();
+    CALL valsanv_ZAGIMORE_DS.customer_dimension_type2_refresh_ver2();
+    CALL valsanv_ZAGIMORE_DS.daily_fact_refresh();
+END$$$
+
+DELIMITER ;
+
+-- =========================================================================================================================
